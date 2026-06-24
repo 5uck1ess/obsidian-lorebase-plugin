@@ -69,8 +69,9 @@ export class AnimeService {
         if (value === null || value === undefined) return null;
         const parsed = typeof value === 'number' ? value : parseInt(String(value), 10);
         if (!Number.isFinite(parsed)) return null;
-        if (parsed < 1 || parsed > 5) return null;
-        return parsed as AnimeItem['userRating'];
+        const rounded = Math.round(parsed);
+        if (rounded < 1 || rounded > 10) return null;
+        return rounded as AnimeItem['userRating'];
     }
 
     private getStatusFromString(value: string): AnimeStatus | null {

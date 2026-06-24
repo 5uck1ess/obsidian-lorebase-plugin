@@ -27,6 +27,7 @@ import {
     parseBadges,
 } from './settings/settingsNormalization';
 import type { MediaTypeKey } from './settings/sections/types';
+import { normalizeRatingScale } from './services/ratingScale';
 
 // =============================================================================
 // LOREBASE PLUGIN
@@ -149,6 +150,7 @@ export default class LorebasePlugin extends Plugin {
         const loaded: unknown = await this.loadData();
         const sanitized = this.isSettingsRecord(loaded) ? { ...loaded } : {};
         this.settings = Object.assign({}, DEFAULT_SETTINGS, sanitized);
+        this.settings.ratingScale = normalizeRatingScale(sanitized?.ratingScale);
 
         // Ensure nested objects are merged properly
         if (sanitized?.games) {
@@ -556,7 +558,8 @@ export default class LorebasePlugin extends Plugin {
                     });
                     onSave();
                     return true;
-                }
+                },
+                this.settings.ratingScale
             );
             modal.open();
             return;
@@ -581,7 +584,8 @@ export default class LorebasePlugin extends Plugin {
                     onSave();
                 });
             },
-            this.settings.tagPresets.games
+            this.settings.tagPresets.games,
+            this.settings.ratingScale
         );
         modal.open();
     }

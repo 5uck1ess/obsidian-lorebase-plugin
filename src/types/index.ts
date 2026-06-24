@@ -55,8 +55,11 @@ export interface AnimePart {
     status: AnimeStatus;
 }
 
-/** User rating from 1-5 */
-export type UserRating = 1 | 2 | 3 | 4 | 5 | null;
+/** User rating from 1-10 */
+export type UserRating = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | null;
+
+/** Personal rating scale: 1–5 (default) or 1–10 */
+export type RatingScale = 5 | 10;
 
 /** Card size options */
 export type CardSize = 'small' | 'medium' | 'large';
@@ -271,6 +274,8 @@ export interface LibrarySettings {
 export interface LorebaseSettings {
     /** Interface language */
     language: Language;
+    /** Personal rating scale: 1–5 (default) or 1–10 */
+    ratingScale: RatingScale;
     /** Accent color (hex) */
     accentColor: string;
     /** Enabled media types */

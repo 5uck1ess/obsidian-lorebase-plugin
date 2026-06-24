@@ -59,6 +59,7 @@ export type TranslationKey =
     | 'settingsBadgesPosition'
     | 'settingsBadgesPosTopLeft' | 'settingsBadgesPosTopRight' | 'settingsBadgesPosBottomLeft' | 'settingsBadgesPosBottomRight'
     | 'settingsDescLanguage' | 'settingsDescColor' | 'settingsDescFolder'
+    | 'settingsRatingScale' | 'settingsRatingScaleDesc'
     | 'settingsDescColumns' | 'settingsDescOrientation' | 'settingsDescShowAdult' | 'settingsDescReset'
     | 'settingsIntegrations' | 'settingsIntegrationsEnable' | 'settingsIntegrationsEnableDesc'
     | 'settingsIntegrationsProviders' | 'settingsIntegrationsMediaProviders' | 'settingsIntegrationsTemplates'
@@ -285,6 +286,8 @@ const EN: Record<TranslationKey, string> = {
     settingsDescLanguage: 'Interface language',
     settingsDescColor: 'Theme accent color',
     settingsDescFolder: 'Path to the library folder in your vault. Type any path, including new or nested folders (e.g. Entertainment/Anime); it is created automatically when you add an item.',
+    settingsRatingScale: 'Rating scale',
+    settingsRatingScaleDesc: 'Maximum personal rating. 1–5 shows a five-star picker; 1–10 shows a number dropdown. Existing ratings are never changed.',
     settingsDescColumns: 'Maximum columns in the grid (3-8). The grid auto-fits down when the pane is narrow.',
     settingsDescOrientation: 'Choose card layout and image aspect ratio',
     settingsDescShowAdult: 'Show adult content in "All" view mode',
@@ -689,6 +692,8 @@ const RU: Record<TranslationKey, string> = {
     settingsDescLanguage: 'Язык интерфейса',
     settingsDescColor: 'Цвет акцента темы',
     settingsDescFolder: 'Путь к папке библиотеки в хранилище. Укажите любой путь, в том числе новую или вложенную папку (например, Entertainment/Anime); она будет создана автоматически при добавлении элемента.',
+    settingsRatingScale: 'Шкала оценки',
+    settingsRatingScaleDesc: 'Максимальная личная оценка. 1–5 — выбор из пяти звёзд; 1–10 — выпадающий список с числом. Существующие оценки не изменяются.',
     settingsDescColumns: 'Максимум колонок в сетке (3-8). При узкой панели сетка автоматически уменьшает их число.',
     settingsDescOrientation: 'Выберите ориентацию карточек',
     settingsDescShowAdult: 'Показывать 18+ в режиме "Все"',
