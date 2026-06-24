@@ -67,14 +67,19 @@ export function renderLibrarySettings(
             context.plugin.refreshViews();
         };
 
+        let modalOpen = false;
         const offerRelocate = (): void => {
-            const finalPath = context.plugin.settings[key].folderPath;
-            if (finalPath === committedPath) {
+            if (modalOpen) {
                 return;
             }
-            const movable = committedPath
+            const fromPath = committedPath;
+            const finalPath = context.plugin.settings[key].folderPath;
+            if (finalPath === fromPath) {
+                return;
+            }
+            const movable = fromPath
                 ? relocateService.collectMovableNotes(
-                    committedPath,
+                    fromPath,
                     (file) => context.plugin.parsesAsLibraryNote(key, file),
                 )
                 : [];
@@ -82,21 +87,25 @@ export function renderLibrarySettings(
                 committedPath = finalPath;
                 return;
             }
-            new RelocateConfirmModal(context.app, movable.length, committedPath, finalPath, {
+            modalOpen = true;
+            new RelocateConfirmModal(context.app, movable.length, fromPath, finalPath, {
                 onMove: async (): Promise<void> => {
-                    const result = await relocateService.relocateNotes(movable, committedPath, finalPath);
+                    const result = await relocateService.relocateNotes(movable, fromPath, finalPath);
                     committedPath = finalPath;
-                    context.plugin.refreshViews();
+                    modalOpen = false;
                     new Notice(`${result.moved} ${t('relocateNotesLabel')} ${t('relocateMovedSuffix')}`);
                     if (result.failed.length > 0) {
                         new Notice(`${result.failed.length} ${t('relocateNotesLabel')} ${t('relocateFailedSuffix')}`);
                     }
+                    context.plugin.refreshViews();
                 },
                 onChangeOnly: (): void => {
                     committedPath = finalPath;
+                    modalOpen = false;
                 },
                 onCancel: async (): Promise<void> => {
                     context.plugin.settings[key].folderPath = committedPath;
+                    modalOpen = false;
                     await context.plugin.saveSettings();
                     context.plugin.refreshViews();
                     text.setValue(committedPath);
