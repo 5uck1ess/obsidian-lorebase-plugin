@@ -197,6 +197,17 @@ describe('AnimeService', () => {
         expect(written.integration_id).toBe('42');
     });
 
+    it('parses a 1-10 rating from frontmatter', () => {
+        const file = createMockFile('Anime/Frieren.md', 'Frieren');
+        const app = createMockApp({
+            [file.path]: {
+                frontmatter: { type: 'anime', status: 'watching', rating: '9' },
+            },
+        });
+        const parsed = new AnimeService(app).parseAnimeFromCache(file);
+        expect(parsed?.userRating).toBe(9);
+    });
+
     it('filters hidden custom posters by default and sorts by rating', () => {
         const service = new AnimeService(createMockApp({}));
         const items: AnimeItem[] = [

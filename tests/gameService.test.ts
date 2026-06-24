@@ -220,4 +220,15 @@ describe('GameService', () => {
         expect(parsed?.developer).toBe('Ubisoft Montreal');
         expect(parsed?.publisher).toBe('Ubisoft Entertainment');
     });
+
+    it('parses a 1-10 rating from frontmatter', () => {
+        const file = createMockFile('Games/Elden Ring.md', 'Elden Ring');
+        const app = createMockApp({
+            [file.path]: {
+                frontmatter: { type: 'game', status: 'played', userRating: '8' },
+            },
+        });
+        const parsed = new GameService(app).parseGameFromCache(file);
+        expect(parsed?.userRating).toBe(8);
+    });
 });

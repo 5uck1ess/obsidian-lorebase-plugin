@@ -5,7 +5,7 @@
  */
 
 import { App, TFile, TFolder } from 'obsidian';
-import { GameItem, GameStatus, FilterState, GameStats, SortField, SortOrder } from '../types';
+import { GameItem, GameStatus, FilterState, GameStats, SortField, SortOrder, UserRating } from '../types';
 import { MetadataService } from './MetadataService';
 import { DEFAULT_COVER } from '../constants';
 import { t } from '../localization';
@@ -311,14 +311,15 @@ export class GameService {
                 status = 'sandbox';
             }
 
-            // Parse rating safely
-            let userRating = null;
+            // Parse rating safely (1–10; stored value preserved regardless of the active scale)
+            let userRating: UserRating = null;
             if (metadata.userRating !== undefined && metadata.userRating !== null) {
                 const rating = typeof metadata.userRating === 'string'
                     ? parseInt(metadata.userRating, 10)
                     : Number(metadata.userRating);
-                if (!isNaN(rating) && rating >= 1 && rating <= 5) {
-                    userRating = rating as 1 | 2 | 3 | 4 | 5;
+                const rounded = Math.round(rating);
+                if (!isNaN(rounded) && rounded >= 1 && rounded <= 10) {
+                    userRating = rounded as UserRating;
                 }
             }
 
