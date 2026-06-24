@@ -31,6 +31,7 @@ export class RelocateService {
                 desired,
                 (path) => claimed.has(path) || this.app.vault.getAbstractFileByPath(path) !== null,
             );
+            // Claim before moving so a failed move never frees the name for a later file in the batch.
             claimed.add(destination);
 
             try {
@@ -48,15 +49,17 @@ export class RelocateService {
 
     private async ensureParentFolder(filePath: string): Promise<void> {
         const slash = filePath.lastIndexOf('/');
-        if (slash < 0) {
+        if (slash <= 0) {
             return;
         }
         const parent = filePath.slice(0, slash);
-        if (!parent || this.app.vault.getAbstractFileByPath(parent) instanceof TFolder) {
+        const existing = this.app.vault.getAbstractFileByPath(parent);
+        if (existing instanceof TFolder) {
             return;
         }
-        if (this.app.vault.getAbstractFileByPath(parent) === null) {
-            await this.app.vault.createFolder(parent);
+        if (existing !== null) {
+            throw new Error(`Lorebase: parent path '${parent}' is a file, cannot create folder`);
         }
+        await this.app.vault.createFolder(parent);
     }
 }
