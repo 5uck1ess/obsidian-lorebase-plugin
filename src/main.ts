@@ -549,7 +549,8 @@ export default class LorebasePlugin extends Plugin {
                     });
                     onSave();
                     return true;
-                }
+                },
+                this.settings.ratingScale
             );
             modal.open();
             return;
@@ -574,7 +575,8 @@ export default class LorebasePlugin extends Plugin {
                     onSave();
                 });
             },
-            this.settings.tagPresets.games
+            this.settings.tagPresets.games,
+            this.settings.ratingScale
         );
         modal.open();
     }
