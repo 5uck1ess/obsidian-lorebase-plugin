@@ -53,6 +53,23 @@ export function renderGeneralSettings(context: SettingsSectionContext, container
         }
     );
 
+    const ratingScaleSetting = new Setting(container)
+        .setName(t('settingsRatingScale'))
+        .setDesc(t('settingsRatingScaleDesc'));
+    addLorebaseDropdown<'5' | '10'>(
+        ratingScaleSetting,
+        [
+            { value: '5', label: '1–5' },
+            { value: '10', label: '1–10' },
+        ],
+        String(context.plugin.settings.ratingScale) as '5' | '10',
+        async (value) => {
+            context.plugin.settings.ratingScale = value === '10' ? 10 : 5;
+            await context.plugin.saveSettings();
+            context.plugin.refreshViews();
+        }
+    );
+
     let intensitySlider: SliderComponent;
     let particleIntensitySetting: Setting;
 
