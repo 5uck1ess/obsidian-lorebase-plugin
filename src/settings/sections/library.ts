@@ -1,9 +1,11 @@
-import { Setting } from 'obsidian';
+import { Notice, Setting } from 'obsidian';
 import { DEFAULT_SETTINGS } from '../../constants';
 import { t } from '../../localization';
 import type { CardSize } from '../../types';
 import { addLorebaseDropdown } from './customDropdown';
 import { FolderSuggest } from '../../components/FolderSuggest';
+import { RelocateService } from '../../services/RelocateService';
+import { RelocateConfirmModal } from '../../modals/RelocateConfirmModal';
 import type { MediaTypeKey, SettingsSectionContext } from './types';
 
 export function renderLibrarySettings(
@@ -56,17 +58,61 @@ export function renderLibrarySettings(
         .setName(t('settingsFolder'))
         .setDesc(t('settingsDescFolder'));
     folderSetting.addText((text) => {
+        const relocateService = new RelocateService(context.app);
+        let committedPath = settings.folderPath;
+
         const persist = async (value: string): Promise<void> => {
             context.plugin.settings[key].folderPath = value.trim();
             await context.plugin.saveSettings();
             context.plugin.refreshViews();
         };
+
+        const offerRelocate = (): void => {
+            const finalPath = context.plugin.settings[key].folderPath;
+            if (finalPath === committedPath) {
+                return;
+            }
+            const movable = committedPath
+                ? relocateService.collectMovableNotes(
+                    committedPath,
+                    (file) => context.plugin.parsesAsLibraryNote(key, file),
+                )
+                : [];
+            if (movable.length === 0) {
+                committedPath = finalPath;
+                return;
+            }
+            new RelocateConfirmModal(context.app, movable.length, committedPath, finalPath, {
+                onMove: async (): Promise<void> => {
+                    const result = await relocateService.relocateNotes(movable, committedPath, finalPath);
+                    committedPath = finalPath;
+                    context.plugin.refreshViews();
+                    new Notice(`${result.moved} ${t('relocateNotesLabel')} ${t('relocateMovedSuffix')}`);
+                    if (result.failed.length > 0) {
+                        new Notice(`${result.failed.length} ${t('relocateNotesLabel')} ${t('relocateFailedSuffix')}`);
+                    }
+                },
+                onChangeOnly: (): void => {
+                    committedPath = finalPath;
+                },
+                onCancel: async (): Promise<void> => {
+                    context.plugin.settings[key].folderPath = committedPath;
+                    await context.plugin.saveSettings();
+                    context.plugin.refreshViews();
+                    text.setValue(committedPath);
+                },
+            }).open();
+        };
+
         text
             .setPlaceholder(DEFAULT_SETTINGS[key].folderPath)
             .setValue(settings.folderPath)
             .onChange((value) => {
                 void persist(value);
             });
+        text.inputEl.addEventListener('blur', () => {
+            offerRelocate();
+        });
         new FolderSuggest(context.app, text.inputEl, persist);
     });
 
