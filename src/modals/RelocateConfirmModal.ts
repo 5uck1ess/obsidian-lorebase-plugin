@@ -46,7 +46,12 @@ export class RelocateConfirmModal extends Modal {
         });
         cancelBtn.addEventListener('click', () => {
             this.resolved = true;
-            void this.callbacks.onCancel().finally(() => this.close());
+            cancelBtn.disabled = true;
+            void this.callbacks.onCancel()
+                .catch((error: unknown) => {
+                    console.error('Lorebase: relocate cancel failed', error);
+                })
+                .finally(() => this.close());
         });
 
         const changeOnlyBtn = buttons.createEl('button', {
@@ -79,7 +84,9 @@ export class RelocateConfirmModal extends Modal {
         // Closing via Esc / click-outside without choosing = cancel (revert).
         if (!this.resolved) {
             this.resolved = true;
-            void this.callbacks.onCancel();
+            void this.callbacks.onCancel().catch((error: unknown) => {
+                console.error('Lorebase: relocate cancel failed', error);
+            });
         }
         this.modalEl.removeClass('lorebase-reset-modal-container');
         this.contentEl.empty();
