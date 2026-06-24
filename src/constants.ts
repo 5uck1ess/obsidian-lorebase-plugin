@@ -121,6 +121,7 @@ export const DEFAULT_GAME_TAG_PRESETS = [
 /** Default plugin settings */
 export const DEFAULT_SETTINGS: LorebaseSettings = {
     language: 'en',
+    ratingScale: 5,
     accentColor: '#e4a47e',
     enabledMedia: { games: true, anime: true },
     particleEffect: 'none',

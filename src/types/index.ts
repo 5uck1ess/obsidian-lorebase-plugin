@@ -274,6 +274,8 @@ export interface LibrarySettings {
 export interface LorebaseSettings {
     /** Interface language */
     language: Language;
+    /** Personal rating scale: 1–5 (default) or 1–10 */
+    ratingScale: RatingScale;
     /** Accent color (hex) */
     accentColor: string;
     /** Enabled media types */
