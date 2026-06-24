@@ -830,6 +830,7 @@ export class LibraryView extends ItemView {
     private showContextMenu(game: MediaItem, x: number, y: number): void {
         showMediaContextMenu(game, x, y, {
             isDestroyed: () => this.isDestroyed,
+            ratingScale: this.plugin.settings.ratingScale,
             getStatusOptions: () => this.getStatusOptions(),
             onApplyFiltersAndSort: () => this.applyFiltersAndSort({ scrollMode: 'preserve' }),
             onItemMutated: (item, changedFields) => this.handleContextItemMutation(item, changedFields),
