@@ -26,7 +26,7 @@ import {
     normalizeTagPresets,
     parseBadges,
 } from './settings/settingsNormalization';
-import { MediaTypeKey } from './settings/sections/types';
+import type { MediaTypeKey } from './settings/sections/types';
 
 // =============================================================================
 // LOREBASE PLUGIN
