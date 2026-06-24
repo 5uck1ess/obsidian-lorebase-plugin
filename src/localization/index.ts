@@ -150,7 +150,10 @@ export type TranslationKey =
     | 'noticeProviderTestSuccess' | 'noticeProviderTestFail'
     | 'noticeIntegrationsError'
     | 'promptFileExistsTitle' | 'promptFileExistsBody' | 'promptFileExistsUpdate' | 'promptFileExistsSkip'
-    | 'commonOk' | 'commonCancel' | 'commonBack';
+    | 'commonOk' | 'commonCancel' | 'commonBack'
+    | 'relocateTitle' | 'relocateBody' | 'relocateNotesLabel'
+    | 'relocateFromLabel' | 'relocateToLabel' | 'relocateMove'
+    | 'relocateChangeOnly' | 'relocateMovedSuffix' | 'relocateFailedSuffix';
 
 // =============================================================================
 // TRANSLATIONS
@@ -549,6 +552,15 @@ const EN: Record<TranslationKey, string> = {
     commonCancel: 'Cancel',
     commonBack: 'Back',
     commonNoData: 'No data',
+    relocateTitle: 'Move library notes?',
+    relocateBody: 'Notes in the previous folder are not moved automatically. Move them to the new folder now?',
+    relocateNotesLabel: 'notes',
+    relocateFromLabel: 'From',
+    relocateToLabel: 'To',
+    relocateMove: 'Move notes',
+    relocateChangeOnly: 'Just change folder',
+    relocateMovedSuffix: 'moved',
+    relocateFailedSuffix: 'could not be moved',
 };
 
 /** Russian translations */
@@ -944,6 +956,15 @@ const RU: Record<TranslationKey, string> = {
     commonCancel: 'Отмена',
     commonBack: 'Назад',
     commonNoData: 'Нет данных',
+    relocateTitle: 'Переместить заметки библиотеки?',
+    relocateBody: 'Заметки из прежней папки не переносятся автоматически. Переместить их в новую папку?',
+    relocateNotesLabel: 'заметок',
+    relocateFromLabel: 'Из',
+    relocateToLabel: 'В',
+    relocateMove: 'Переместить заметки',
+    relocateChangeOnly: 'Только сменить папку',
+    relocateMovedSuffix: 'перемещено',
+    relocateFailedSuffix: 'не удалось переместить',
 };
 
 // =============================================================================

@@ -3,7 +3,7 @@
  * Games and anime tracker plugin for Obsidian
  */
 
-import { Plugin, WorkspaceLeaf, Menu, Notice, addIcon } from 'obsidian';
+import { Plugin, WorkspaceLeaf, Menu, Notice, addIcon, TFile } from 'obsidian';
 import { LorebaseSettings, MediaItem, GameStats, AnimeStats, MediaType } from './types';
 import { DEFAULT_SETTINGS, VIEW_TYPE_LIBRARY, LOREBASE_ICON_ID, LOREBASE_ICON_SVG } from './constants';
 import { i18n, t } from './localization';
@@ -26,6 +26,7 @@ import {
     normalizeTagPresets,
     parseBadges,
 } from './settings/settingsNormalization';
+import { MediaTypeKey } from './settings/sections/types';
 
 // =============================================================================
 // LOREBASE PLUGIN
@@ -469,6 +470,14 @@ export default class LorebasePlugin extends Plugin {
         this.applyAccentColor();
         this.normalizeMediaType();
         this.applyParticles();
+    }
+
+    /** Whether the given file parses as a note of the given library media type. */
+    parsesAsLibraryNote(kind: MediaTypeKey, file: TFile): boolean {
+        if (kind === 'games') {
+            return this.gameService !== null && this.gameService.parseGameFromCache(file) !== null;
+        }
+        return this.animeService !== null && this.animeService.parseAnimeFromCache(file) !== null;
     }
 
     /**
