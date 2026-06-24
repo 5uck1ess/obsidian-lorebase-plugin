@@ -6,6 +6,7 @@
 import { AnimeItem, GameItem, MediaItem, CardSize, CardOrientation, SortField, LorebaseSettings, BadgePosition, MediaStatus } from '../types';
 import { t, i18n } from '../localization';
 import { STATUS_CONFIG, RATING_EMOJI, CARD_SIZES, DEFAULT_COVER, DEFAULT_SETTINGS, HORIZONTAL_CARD_SIZES } from '../constants';
+import { ratingBadgeText } from '../services/ratingScale';
 
 // =============================================================================
 // CARD CALLBACKS
@@ -340,16 +341,13 @@ export class GameCard {
         if (!this.game.userRating) return;
 
         const ratingBadge = parent.createDiv({ cls: 'lorebase-card-rating' });
-        const starText = `\u2605${this.game.userRating}`;
-        const emojiText = RATING_EMOJI[this.game.userRating] ?? '';
         const mode = this.badges.rating.mode;
+        const emoji = RATING_EMOJI[this.game.userRating];
 
-        if (mode === 'emoji') {
+        ratingBadge.textContent = ratingBadgeText(this.game.userRating, mode, emoji);
+        if (mode === 'emoji' && emoji) {
             ratingBadge.addClass('is-emoji');
-            ratingBadge.textContent = emojiText;
-            return;
         }
-        ratingBadge.textContent = starText;
     }
 
     private static favoriteTemplate: SVGElement | null = null;
