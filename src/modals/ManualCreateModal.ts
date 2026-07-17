@@ -1,7 +1,8 @@
 import { App, Modal, Notice, setIcon } from 'obsidian';
 import { t } from '../localization';
 import { createLorebaseDropdown } from '../components/LorebaseDropdown';
-import type { AnimeFormat, AnimePart, AnimeStatus, GameStatus, UserRating } from '../types';
+import type { AnimeFormat, AnimePart, AnimeStatus, GameStatus, RatingScale, UserRating } from '../types';
+import { clampRating } from '../services/ratingScale';
 import type { MediaKind } from '../services/integrations/types';
 
 export type AddMode = 'provider' | 'manual';
@@ -116,10 +117,12 @@ export class ManualCreateModal extends Modal {
     private resolve?: (draft: ManualCreateDraft | null) => void;
     private hasResolved = false;
     private previewObjectUrl: string | null = null;
+    private ratingScale: RatingScale;
 
-    constructor(app: App, defaultKind: MediaKind) {
+    constructor(app: App, defaultKind: MediaKind, ratingScale: RatingScale = 5) {
         super(app);
         this.draft = this.createDefaultDraft(defaultKind);
+        this.ratingScale = ratingScale;
     }
 
     openAndGetValue(): Promise<ManualCreateDraft | null> {
@@ -320,6 +323,18 @@ export class ManualCreateModal extends Modal {
     }
 
     private createRatingStars(parent: HTMLElement): void {
+        if (this.ratingScale === 10) {
+            this.createSelect(parent, t('editRating'), String(this.draft.rating ?? ''), [
+                ['', '-'],
+                ...Array.from({ length: 10 }, (_, index): [string, string] => {
+                    const value = String(index + 1);
+                    return [value, value];
+                }),
+            ], (value) => {
+                this.draft.rating = clampRating(Number(value), this.ratingScale);
+            });
+            return;
+        }
         const field = parent.createDiv({ cls: 'lorebase-editmode-field lorebase-manual-rating-field' });
         field.createSpan({ cls: 'lorebase-editmode-field-label', text: t('editRating') });
         const row = field.createDiv({ cls: 'lorebase-editmode-stars lorebase-manual-stars' });
@@ -500,8 +515,7 @@ export class ManualCreateModal extends Modal {
             ['4', '4'],
             ['5', '5'],
         ], (value) => {
-            const parsed = this.parseNumber(value);
-            this.draft.rating = parsed && parsed >= 1 && parsed <= 5 ? parsed as Exclude<UserRating, null> : null;
+            this.draft.rating = clampRating(this.parseNumber(value), this.ratingScale);
         });
     }
 

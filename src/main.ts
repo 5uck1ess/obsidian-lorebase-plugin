@@ -32,6 +32,8 @@ import {
     parseBadges,
 } from './settings/settingsNormalization';
 import { parseRelatedMedia } from './services/media/parsers';
+import { normalizeRatingScale } from './services/ratingScale';
+import type { MediaTypeKey } from './settings/sections/types';
 
 // =============================================================================
 // LOREBASE PLUGIN
@@ -192,6 +194,7 @@ export default class LorebasePlugin extends Plugin {
         const loaded: unknown = await this.loadData();
         const sanitized = this.isSettingsRecord(loaded) ? { ...loaded } : {};
         this.settings = Object.assign({}, DEFAULT_SETTINGS, sanitized);
+        this.settings.ratingScale = normalizeRatingScale(sanitized.ratingScale);
         this.settings.settingsLayoutMode = sanitized.settingsLayoutMode === 'accordion'
             ? 'accordion'
             : 'tabs';
@@ -731,6 +734,24 @@ export default class LorebasePlugin extends Plugin {
         this.applyParticles();
     }
 
+    /** Whether a file parses as a note in the selected media library. */
+    parsesAsLibraryNote(kind: MediaTypeKey, file: TFile): boolean {
+        switch (kind) {
+            case 'games':
+                return this.gameService !== null && this.gameService.parseGameFromCache(file) !== null;
+            case 'anime':
+                return this.animeService !== null && this.animeService.parseAnimeFromCache(file) !== null;
+            case 'movies':
+                return this.movieService !== null && this.movieService.parseFromCache(file) !== null;
+            case 'series':
+                return this.seriesService !== null && this.seriesService.parseFromCache(file) !== null;
+            case 'books':
+                return this.bookService !== null && this.bookService.parseFromCache(file)?.type === 'book';
+            case 'manga':
+                return this.mangaService !== null && this.mangaService.parseFromCache(file)?.type === 'manga';
+        }
+    }
+
     /**
      * Activate the library view
      */
@@ -808,7 +829,8 @@ export default class LorebasePlugin extends Plugin {
                     onSave();
                     return true;
                 },
-                this.collectRelatedMediaCandidates()
+                this.collectRelatedMediaCandidates(),
+                this.settings.ratingScale
             );
             modal.open();
             return;
@@ -832,7 +854,8 @@ export default class LorebasePlugin extends Plugin {
                     });
                 },
                 this.collectIncomingRelatedMedia(item.filePath),
-                this.collectRelatedMediaCandidates()
+                this.collectRelatedMediaCandidates(),
+                this.settings.ratingScale
             );
             modal.open();
             return;
@@ -855,7 +878,8 @@ export default class LorebasePlugin extends Plugin {
                         await service.deleteItem(readingItem);
                         onSave();
                     });
-                }
+                },
+                this.settings.ratingScale
             );
             modal.open();
             return;
@@ -880,7 +904,8 @@ export default class LorebasePlugin extends Plugin {
                     onSave();
                 });
             },
-            this.settings.tagPresets.games
+            this.settings.tagPresets.games,
+            this.settings.ratingScale
         );
         modal.open();
     }

@@ -72,6 +72,7 @@ export type TranslationKey =
     | 'settingsBadgesPosition'
     | 'settingsBadgesPosTopLeft' | 'settingsBadgesPosTopRight' | 'settingsBadgesPosBottomLeft' | 'settingsBadgesPosBottomRight'
     | 'settingsDescLanguage' | 'settingsDescColor' | 'settingsDescFolder'
+    | 'settingsRatingScale' | 'settingsRatingScaleDesc'
     | 'settingsDescColumns' | 'settingsDescOrientation' | 'settingsDescShowAdult' | 'settingsDescReset'
     | 'settingsIntegrations' | 'settingsIntegrationsEnable' | 'settingsIntegrationsEnableDesc'
     | 'settingsIntegrationsSteamSyncDesc'
@@ -178,6 +179,9 @@ export type TranslationKey =
     | 'deleteTitle' | 'deleteSubtitle' | 'deleteWarning' | 'deleteConfirmAck' | 'deleteConfirm' | 'deleteCancel'
     | 'deleteTitleAnime' | 'deleteSubtitleAnime' | 'deleteConfirmAckAnime'
     | 'deleteTitleReading' | 'deleteSubtitleReading' | 'deleteConfirmAckReading'
+    | 'relocateTitle' | 'relocateBody' | 'relocateNotesLabel'
+    | 'relocateFromLabel' | 'relocateToLabel' | 'relocateMove'
+    | 'relocateChangeOnly' | 'relocateMovedSuffix' | 'relocateFailedSuffix'
     // Notifications
     | 'notifyLoading'
     | 'commandOpenLibrary' | 'commandAddGame' | 'commandAddAnime' | 'commandAddMovie' | 'commandAddSeries' | 'commandAddBook' | 'commandAddManga'
@@ -390,6 +394,8 @@ const EN: Record<TranslationKey, string> = {
     settingsBadgesPosBottomLeft: 'Bottom left',
     settingsBadgesPosBottomRight: 'Bottom right',
     settingsDescLanguage: 'Interface language',
+    settingsRatingScale: 'Rating scale',
+    settingsRatingScaleDesc: 'Maximum personal rating. 1-5 shows a five-star picker; 1-10 shows a number dropdown. Existing ratings are never changed.',
     settingsDescColor: 'Theme accent color',
     settingsDescFolder: 'Type any vault folder path. Existing folders appear as suggestions; new nested paths are created on first write.',
     settingsDescColumns: 'Maximum columns in the grid (3-8). The grid auto-fits down when the pane is narrow.',
@@ -787,6 +793,15 @@ const EN: Record<TranslationKey, string> = {
     commonCancel: 'Cancel',
     commonBack: 'Back',
     commonNoData: 'No data',
+    relocateTitle: 'Move library notes?',
+    relocateBody: 'Notes in the previous folder are not moved automatically. Move them to the new folder now?',
+    relocateNotesLabel: 'notes',
+    relocateFromLabel: 'From',
+    relocateToLabel: 'To',
+    relocateMove: 'Move notes',
+    relocateChangeOnly: 'Just change folder',
+    relocateMovedSuffix: 'moved',
+    relocateFailedSuffix: 'could not be moved',
 };
 
 /** Russian translations */
@@ -972,6 +987,8 @@ const RU: Record<TranslationKey, string> = {
     settingsBadgesPosBottomLeft: 'Снизу слева',
     settingsBadgesPosBottomRight: 'Снизу справа',
     settingsDescLanguage: 'Язык интерфейса',
+    settingsRatingScale: 'Шкала оценки',
+    settingsRatingScaleDesc: 'Максимальная личная оценка. 1-5 — выбор из пяти звёзд; 1-10 — выпадающий список с числом. Существующие оценки не изменяются.',
     settingsDescColor: 'Цвет акцента темы',
     settingsDescFolder: 'Введите любой путь к папке в vault. Существующие папки появятся в подсказках; новые вложенные пути создаются при первой записи.',
     settingsDescColumns: 'Максимум колонок в сетке (3-8). При узкой панели сетка автоматически уменьшает их число.',
@@ -1369,6 +1386,15 @@ const RU: Record<TranslationKey, string> = {
     commonCancel: 'Отмена',
     commonBack: 'Назад',
     commonNoData: 'Нет данных',
+    relocateTitle: 'Переместить заметки библиотеки?',
+    relocateBody: 'Заметки из прежней папки не переносятся автоматически. Переместить их в новую папку?',
+    relocateNotesLabel: 'заметок',
+    relocateFromLabel: 'Из',
+    relocateToLabel: 'В',
+    relocateMove: 'Переместить заметки',
+    relocateChangeOnly: 'Только сменить папку',
+    relocateMovedSuffix: 'перемещено',
+    relocateFailedSuffix: 'не удалось переместить',
 };
 
 /** Ukrainian translations. Uses Russian as a safety fallback for rarely used strings until community review is complete. */
@@ -1555,6 +1581,8 @@ const UK: Record<TranslationKey, string> = {
     settingsBadgesPosBottomLeft: 'Знизу ліворуч',
     settingsBadgesPosBottomRight: 'Знизу праворуч',
     settingsDescLanguage: 'Мова інтерфейсу',
+    settingsRatingScale: 'Шкала оцінювання',
+    settingsRatingScaleDesc: 'Максимальна особиста оцінка. 1-5 показує п’ять зірок; 1-10 — числовий список. Наявні оцінки не змінюються.',
     settingsDescColor: 'Акцентний колір теми',
     settingsDescFolder: 'Введіть будь-який шлях до папки сховища. Існуючі папки зʼявляться як підказки, нові вкладені шляхи створяться під час першого запису.',
     settingsDescColumns: 'Максимальна кількість колонок у сітці (3-8). Сітка автоматично стискається, коли панель вузька.',
@@ -1948,6 +1976,15 @@ const UK: Record<TranslationKey, string> = {
     commonCancel: 'Скасувати',
     commonBack: 'Назад',
     commonNoData: 'Немає даних',
+    relocateTitle: 'Перемістити нотатки бібліотеки?',
+    relocateBody: 'Нотатки з попередньої папки не переміщуються автоматично. Перемістити їх до нової папки зараз?',
+    relocateNotesLabel: 'нотаток',
+    relocateFromLabel: 'З',
+    relocateToLabel: 'До',
+    relocateMove: 'Перемістити нотатки',
+    relocateChangeOnly: 'Лише змінити папку',
+    relocateMovedSuffix: 'переміщено',
+    relocateFailedSuffix: 'не вдалося перемістити',
 };
 
 // =============================================================================
