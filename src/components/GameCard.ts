@@ -13,6 +13,7 @@ import {
     getSteamHorizontalImageCandidates,
     getSteamVerticalImageCandidates
 } from '../services/integrations/steamImages';
+import { ratingBadgeText } from '../services/ratingScale';
 
 // =============================================================================
 // CARD CALLBACKS
@@ -454,16 +455,13 @@ export class GameCard {
         if (!this.game.userRating) return;
 
         const ratingBadge = parent.createDiv({ cls: 'lorebase-card-rating' });
-        const starText = `\u2605${this.game.userRating}`;
-        const emojiText = RATING_EMOJI[this.game.userRating] ?? '';
+        const emojiText = RATING_EMOJI[this.game.userRating];
         const mode = this.badges.rating.mode;
 
-        if (mode === 'emoji') {
+        if (mode === 'emoji' && emojiText) {
             ratingBadge.addClass('is-emoji');
-            ratingBadge.textContent = emojiText;
-            return;
         }
-        ratingBadge.textContent = starText;
+        ratingBadge.textContent = ratingBadgeText(this.game.userRating, mode, emojiText);
     }
 
     private static favoriteTemplate: SVGElement | null = null;

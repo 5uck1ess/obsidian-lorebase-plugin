@@ -101,8 +101,11 @@ export interface RelatedMediaLink {
     imageUrl?: string | null;
 }
 
-/** User rating from 1-5 */
-export type UserRating = 1 | 2 | 3 | 4 | 5 | null;
+/** User rating from 1-10 */
+export type UserRating = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | null;
+
+/** Personal rating scale: 1-5 (default) or 1-10 */
+export type RatingScale = 5 | 10;
 
 /** Card size options */
 export type CardSize = 'small' | 'medium' | 'large';
@@ -201,7 +204,7 @@ interface BaseMediaItem {
     year: number | null;
     /** Description/plot */
     description: string;
-    /** User rating 1-5 */
+    /** User rating 1-10 */
     userRating: UserRating;
     /** Is favorite */
     favorite: boolean;
@@ -413,6 +416,8 @@ interface LibrarySettings {
 export interface LorebaseSettings {
     /** Interface language */
     language: Language;
+    /** Personal rating scale: 1-5 (default) or 1-10 */
+    ratingScale: RatingScale;
     /** Top-level settings page presentation */
     settingsLayoutMode: SettingsLayoutMode;
     /** Accent color (hex) */

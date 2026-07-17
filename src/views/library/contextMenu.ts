@@ -1,5 +1,5 @@
 import { Menu, MenuItem } from 'obsidian';
-import { AnimeItem, BookItem, GameItem, MangaItem, MediaItem, MediaStatus, MovieItem, ReadingItem, SeriesItem } from '../../types';
+import { AnimeItem, BookItem, GameItem, MangaItem, MediaItem, MediaStatus, MovieItem, RatingScale, ReadingItem, SeriesItem, UserRating } from '../../types';
 import { FILTER_ICON_MAP, RATING_EMOJI, STATUS_ICON_MAP } from '../../constants';
 import { t } from '../../localization';
 
@@ -7,6 +7,7 @@ type MenuItemWithSubmenu = MenuItem & { setSubmenu: () => Menu };
 
 export interface MediaContextMenuDeps {
     isDestroyed: () => boolean;
+    ratingScale: RatingScale;
     getStatusOptions: () => Array<{ status: MediaStatus; label: string }>;
     onApplyFiltersAndSort: () => void;
     onEdit: (item: MediaItem) => void;
@@ -28,55 +29,49 @@ export function showMediaContextMenu(item: MediaItem, x: number, y: number, deps
         submenuHost.setTitle(t('contextChangeRating')).setIcon('star');
         const sub = submenuHost.setSubmenu();
 
-        const ratings: Array<{ value: 1 | 2 | 3 | 4 | 5; label: string }> = [
-            { value: 5, label: t('ratingAwesome') },
-            { value: 4, label: t('ratingGood') },
-            { value: 3, label: t('ratingOkay') },
-            { value: 2, label: t('ratingWeak') },
-            { value: 1, label: t('ratingBad') },
-        ];
+        const setRating = (value: UserRating): void => {
+            if (deps.isDestroyed()) return;
+            item.userRating = value;
+            deps.onItemMutated(item, ['userRating']);
+            if (item.type === 'anime') {
+                deps.updateAnime(item, { userRating: value });
+            } else if (item.type === 'movie' || item.type === 'series') {
+                deps.updateVideo?.(item, { userRating: value });
+            } else if (item.type === 'book' || item.type === 'manga') {
+                deps.updateReading?.(item, { userRating: value });
+            } else {
+                deps.updateGame(item, { userRating: value });
+            }
+        };
 
-        for (const rating of ratings) {
-            sub.addItem((subItem: MenuItem) => {
-                subItem.setTitle(`${RATING_EMOJI[rating.value]} ${rating.label}`)
-                    .onClick(() => {
-                        if (deps.isDestroyed()) return;
-                        if (item.type === 'anime') {
-                            item.userRating = rating.value;
-                            deps.onItemMutated(item, ['userRating']);
-                            deps.updateAnime(item, { userRating: rating.value });
-                        } else if (item.type === 'movie' || item.type === 'series') {
-                            item.userRating = rating.value;
-                            deps.onItemMutated(item, ['userRating']);
-                            deps.updateVideo?.(item, { userRating: rating.value });
-                        } else if (item.type === 'book' || item.type === 'manga') {
-                            item.userRating = rating.value;
-                            deps.onItemMutated(item, ['userRating']);
-                            deps.updateReading?.(item, { userRating: rating.value });
-                        } else {
-                            item.userRating = rating.value;
-                            deps.onItemMutated(item, ['userRating']);
-                            deps.updateGame(item, { userRating: rating.value });
-                        }
-                    });
-            });
+        if (deps.ratingScale === 10) {
+            for (let value = 10; value >= 1; value--) {
+                const rating = value as Exclude<UserRating, null>;
+                sub.addItem((subItem: MenuItem) => {
+                    subItem.setTitle(`\u2605${rating}`).onClick(() => setRating(rating));
+                });
+            }
+        } else {
+            const ratings: Array<{ value: Exclude<UserRating, null>; label: string }> = [
+                { value: 5, label: t('ratingAwesome') },
+                { value: 4, label: t('ratingGood') },
+                { value: 3, label: t('ratingOkay') },
+                { value: 2, label: t('ratingWeak') },
+                { value: 1, label: t('ratingBad') },
+            ];
+
+            for (const rating of ratings) {
+                sub.addItem((subItem: MenuItem) => {
+                    subItem.setTitle(`${RATING_EMOJI[rating.value]} ${rating.label}`)
+                        .onClick(() => setRating(rating.value));
+                });
+            }
         }
 
         sub.addItem((subItem: MenuItem) => {
             subItem.setTitle(`${String.fromCodePoint(0x1f9f9)} ${t('contextClear')}`)
                 .onClick(() => {
-                    if (deps.isDestroyed()) return;
-                    item.userRating = null;
-                    deps.onItemMutated(item, ['userRating']);
-                    if (item.type === 'anime') {
-                        deps.updateAnime(item, { userRating: null });
-                    } else if (item.type === 'movie' || item.type === 'series') {
-                        deps.updateVideo?.(item, { userRating: null });
-                    } else if (item.type === 'book' || item.type === 'manga') {
-                        deps.updateReading?.(item, { userRating: null });
-                    } else {
-                        deps.updateGame(item, { userRating: null });
-                    }
+                    setRating(null);
                 });
         });
     });
