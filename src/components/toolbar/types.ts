@@ -1,4 +1,4 @@
-import { FilterState, SortField, SortOrder, ViewMode } from '../../types';
+import { FilterState, LibraryViewState, MediaType, SortField, SortOrder, ViewMode } from '../../types';
 
 export interface ToolbarCallbacks {
     onSortChange: (field: SortField, order: SortOrder) => void;
@@ -9,6 +9,14 @@ export interface ToolbarCallbacks {
     onStats: () => void;
     onSettings: () => void;
     onViewModeChange: (mode: ViewMode) => void;
+    onViewStateChange: (state: LibraryViewState) => void;
+    onApplySavedView: (id: string | null) => void;
+    onSaveView: (name: string, state: LibraryViewState) => void;
+    onUpdateSavedView: (id: string, state: LibraryViewState) => void;
+    onRenameSavedView: (id: string, name: string) => void;
+    onDeleteSavedView: (id: string) => void;
+    onResetView: () => void;
+    onMediaTypeChange: (mediaType: MediaType) => void;
 }
 
 export type TagSummary = {

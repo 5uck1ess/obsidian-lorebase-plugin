@@ -34,6 +34,9 @@ export async function getSteamGridDbPoster(
 
         return getString(exact ?? grids[0] ?? null, 'url');
     } catch (error) {
+        if (error instanceof Error && /(?:status|http)\s*404|\b404\b/i.test(error.message)) {
+            return '';
+        }
         console.warn('[LOREBASE] Failed to load SteamGridDB poster.', error);
         return '';
     }

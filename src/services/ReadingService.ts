@@ -1,10 +1,12 @@
 import { App, TFile, TFolder } from 'obsidian';
-import { BookItem, FilterState, MangaItem, MangaPart, ReadingItem, ReadingStatus, ReadingStats, SortField, SortOrder } from '../types';
+import { FilterState, MangaItem, MangaPart, ReadingItem, ReadingStatus, ReadingStats, SortField, SortOrder } from '../types';
 import { DEFAULT_COVER } from '../constants';
 import { MetadataService } from './MetadataService';
 import { filterAndSortMedia } from './media/filtering';
+import { extractSimpleFrontmatter } from './media/libraryViewState';
 import { getRandomItem, parseNumber, parseRelatedMedia, parseUserRating, parseYear, serializeRelatedMedia } from './media/parsers';
-import { collectFieldTags, collectTags, getAllMarkdownFiles, isTruthy } from './media/serviceUtils';
+import { collectFieldTags, collectTags, getAllMarkdownFiles, isTruthy, mapInFrameBatches } from './media/serviceUtils';
+import { upsertMarkdownSection } from './markdownSections';
 
 export type ReadingMediaType = 'book' | 'manga';
 
@@ -43,21 +45,12 @@ export class ReadingService {
             return [];
         }
 
-        this.cache = getAllMarkdownFiles(folder)
-            .map((file) => this.parseFromCache(file))
-            .filter((item): item is ReadingItem => Boolean(item));
+        this.cache = await mapInFrameBatches(
+            getAllMarkdownFiles(folder),
+            (file) => this.parseFromCache(file)
+        );
         this.cacheValid = true;
         return this.cache;
-    }
-
-    async loadBooks(): Promise<BookItem[]> {
-        if (this.mediaType !== 'book') return [];
-        return (await this.loadItems()).filter((item): item is BookItem => item.type === 'book');
-    }
-
-    async loadManga(): Promise<MangaItem[]> {
-        if (this.mediaType !== 'manga') return [];
-        return (await this.loadItems()).filter((item): item is MangaItem => item.type === 'manga');
     }
 
     parseFromCache(file: TFile): ReadingItem | null {
@@ -74,6 +67,10 @@ export class ReadingService {
             const verticalImageUrl = this.metadataService.getImageUrl(metadata.poster ?? metadata.image, metadata.cm_poster);
             const horizontalImageUrl = this.metadataService.getImageUrl(metadata.poster_b ?? metadata.image_b ?? metadata.horizontal_poster, metadata.cm_poster);
             const status = this.getStatus(this.readText(metadata, ['status']) || '') ?? 'planned';
+            const genres = collectFieldTags(metadata, ['genres', 'genre', 'subjects', 'subject']);
+            const explicitAdult = metadata.Sex18 ?? metadata.sex18 ?? metadata.adult ?? metadata.isAdult;
+            const inferredAdult = this.mediaType === 'manga'
+                && genres.some((genre) => ['adult', 'hentai'].includes(genre.trim().toLowerCase()));
             const base = {
                 filePath: file.path,
                 displayName: title,
@@ -87,16 +84,23 @@ export class ReadingService {
                 imageUrl: verticalImageUrl || poster || DEFAULT_COVER,
                 horizontalImageUrl: horizontalImageUrl || horizontal || verticalImageUrl || poster || null,
                 hasCustomPoster: Boolean(metadata.cm_poster || poster),
-                isAdult: false,
+                isAdult: this.mediaType === 'manga'
+                    && (explicitAdult === undefined ? inferredAdult : isTruthy(explicitAdult)),
                 status,
-                genres: collectFieldTags(metadata, ['genres', 'genre', 'subjects', 'subject']),
+                genres,
                 tags: collectTags(metadata, cache?.tags),
                 dateAdded: file.stat?.ctime ?? file.stat?.mtime ?? Date.now(),
                 lastModified: file.stat?.mtime ?? file.stat?.ctime ?? Date.now(),
                 sourceUrl: this.readText(metadata, ['url', 'source_url']) || null,
+                started: this.readDateText(metadata, ['started', 'dateStarted', 'start_date']),
+                finished: this.readDateText(metadata, ['finished', 'dateFinished', 'finish_date', 'dateRead', 'readDate', 'completedDate']),
                 integrationProvider: this.normalizeProvider(this.readText(metadata, ['integration_provider'])),
                 integrationId: this.readText(metadata, ['integration_id']) || null,
                 relatedMedia: parseRelatedMedia(metadata.related_media),
+                communityRating: parseNumber(metadata.communityRating ?? metadata.community_rating),
+                communityVotes: parseNumber(metadata.communityVotes ?? metadata.community_votes),
+                communityRatingProvider: this.readText(metadata, ['communityRatingProvider', 'community_rating_provider']) || null,
+                rawFields: extractSimpleFrontmatter(metadata),
             };
 
             if (this.mediaType === 'book') {
@@ -105,7 +109,7 @@ export class ReadingService {
                     type: 'book',
                     authors: this.toStringArray(metadata.authors ?? metadata.author ?? metadata.author_name),
                     publisher: this.readText(metadata, ['publisher', 'publishers']) || '',
-                    releaseDate: this.readText(metadata, ['released', 'release_date', 'publishedDate', 'publish_date']) || null,
+                    releaseDate: this.readDateText(metadata, ['released', 'release_date', 'publishedDate', 'publish_date']),
                     pageCurrent: parseNumber(metadata.page_current ?? metadata.pageCurrent),
                     pageTotal: parseNumber(metadata.page_total ?? metadata.pageTotal ?? metadata.pages ?? metadata.pageCount ?? metadata.number_of_pages),
                     chapterCurrent: parseNumber(metadata.chapter_current ?? metadata.chapterCurrent),
@@ -142,8 +146,9 @@ export class ReadingService {
                 parts,
                 activePartId,
                 integrationProvider: base.integrationProvider === 'anilist'
-                    || base.integrationProvider === 'shikimori'
                     || base.integrationProvider === 'jikan'
+                    || base.integrationProvider === 'shikimori'
+                    || base.integrationProvider === 'mangaupdates'
                     || base.integrationProvider === 'mangadex'
                     ? base.integrationProvider
                     : null,
@@ -154,14 +159,24 @@ export class ReadingService {
         }
     }
 
-    filterAndSort(items: ReadingItem[], filter: FilterState, sortField: SortField, sortOrder: SortOrder): ReadingItem[] {
+    filterAndSort(
+        items: ReadingItem[],
+        filter: FilterState,
+        sortField: SortField,
+        sortOrder: SortOrder,
+        showAdultInAll = false
+    ): ReadingItem[] {
         return filterAndSortMedia({
             items,
             filter,
             sortField,
             sortOrder,
-            isVisible: () => true,
-            getCompletedDate: () => null,
+            isVisible: (item) => {
+                if (this.mediaType !== 'manga') return true;
+                if (filter.adultOnly) return showAdultInAll && item.isAdult;
+                return showAdultInAll || !item.isAdult;
+            },
+            getCompletedDate: (item) => this.parseDateString(item.finished),
         });
     }
 
@@ -222,15 +237,38 @@ export class ReadingService {
         if ('status' in updates) frontmatterUpdates.status = updates.status;
         if ('userRating' in updates) frontmatterUpdates.rating = updates.userRating ?? null;
         if ('favorite' in updates) frontmatterUpdates.favorite = updates.favorite;
+        if (item.type === 'manga' && 'isAdult' in updates) frontmatterUpdates.Sex18 = updates.isAdult;
         if ('sourceUrl' in updates) this.updateTextField(frontmatterUpdates, frontmatter, ['url', 'source_url'], updates.sourceUrl);
+        if ('started' in updates) frontmatterUpdates.started = this.normalizeDateString(String(updates.started ?? '')) || null;
+        if ('finished' in updates) frontmatterUpdates.finished = this.normalizeDateString(String(updates.finished ?? '')) || null;
         if ('integrationProvider' in updates) frontmatterUpdates.integration_provider = updates.integrationProvider;
         if ('integrationId' in updates) frontmatterUpdates.integration_id = updates.integrationId;
         if ('relatedMedia' in updates) frontmatterUpdates.related_media = serializeRelatedMedia(updates.relatedMedia);
+        if ('communityRating' in updates) frontmatterUpdates.communityRating = updates.communityRating;
+        if ('communityVotes' in updates) frontmatterUpdates.communityVotes = updates.communityVotes;
+        if ('communityRatingProvider' in updates) frontmatterUpdates.communityRatingProvider = updates.communityRatingProvider;
 
         if (item.type === 'book') {
-            if ('authors' in updates) this.updateListField(frontmatterUpdates, frontmatter, ['authors', 'author'], updates.authors);
-            if ('publisher' in updates) this.updateTextField(frontmatterUpdates, frontmatter, ['publisher', 'publishers'], updates.publisher);
-            if ('releaseDate' in updates) this.updateTextField(frontmatterUpdates, frontmatter, ['released', 'release_date', 'publishedDate'], updates.releaseDate);
+            if ('authors' in updates) this.updateDisplayListField(
+                frontmatterUpdates,
+                frontmatter,
+                'author',
+                'authors',
+                updates.authors
+            );
+            if ('publisher' in updates) this.updateDisplayListField(
+                frontmatterUpdates,
+                frontmatter,
+                'publisher',
+                'publishers',
+                updates.publisher
+            );
+            if ('releaseDate' in updates) this.updateTextField(
+                frontmatterUpdates,
+                frontmatter,
+                ['released', 'release_date', 'publishedDate'],
+                this.normalizeDateString(String(updates.releaseDate ?? ''))
+            );
             const pageTotal = 'pageTotal' in updates ? this.normalizeProgressValue(updates.pageTotal) : item.pageTotal;
             const pageCurrent = 'pageCurrent' in updates ? this.normalizeProgressValue(updates.pageCurrent, pageTotal) : item.pageCurrent;
             const chapterTotal = 'chapterTotal' in updates ? this.normalizeProgressValue(updates.chapterTotal) : item.chapterTotal;
@@ -245,8 +283,20 @@ export class ReadingService {
                 frontmatterUpdates.status = 'completed';
             }
         } else {
-            if ('authors' in updates) this.updateListField(frontmatterUpdates, frontmatter, ['authors', 'author'], updates.authors);
-            if ('artists' in updates) this.updateListField(frontmatterUpdates, frontmatter, ['artists', 'artist'], updates.artists);
+            if ('authors' in updates) this.updateDisplayListField(
+                frontmatterUpdates,
+                frontmatter,
+                'author',
+                'authors',
+                updates.authors
+            );
+            if ('artists' in updates) this.updateDisplayListField(
+                frontmatterUpdates,
+                frontmatter,
+                'artist',
+                'artists',
+                updates.artists
+            );
             let parts = this.cloneParts(Array.isArray(updates.parts) ? updates.parts as MangaPart[] : item.parts ?? []);
             let activePartId = updates.activePartId !== undefined ? String(updates.activePartId || '') || null : item.activePartId ?? null;
             const chapterTotal = 'chapterTotal' in updates ? this.normalizeProgressValue(updates.chapterTotal) : item.chapterTotal;
@@ -283,7 +333,18 @@ export class ReadingService {
         }
 
         await this.metadataService.updateMetadata(file, frontmatterUpdates);
+        if ('myNotes' in updates) {
+            await this.updateMyNotesSection(file, String(updates.myNotes ?? ''));
+        }
         this.invalidateCache();
+    }
+
+    private async updateMyNotesSection(file: TFile, value: string): Promise<void> {
+        const content = await this.app.vault.read(file);
+        const next = upsertMarkdownSection(content, 'My Notes', value);
+        if (next !== content) {
+            await this.app.vault.modify(file, next);
+        }
     }
 
     async deleteItem(item: ReadingItem): Promise<void> {
@@ -382,7 +443,7 @@ export class ReadingService {
 
     private normalizeProvider(value: string): string | null {
         const normalized = value.trim().toLowerCase();
-        return ['hardcover', 'googlebooks', 'anilist', 'shikimori', 'jikan', 'mangadex'].includes(normalized)
+        return ['hardcover', 'googlebooks', 'anilist', 'jikan', 'shikimori', 'mangaupdates', 'mangadex'].includes(normalized)
             ? normalized
             : null;
     }
@@ -400,6 +461,31 @@ export class ReadingService {
             if (text) return text;
         }
         return '';
+    }
+
+    private readDateText(source: Record<string, unknown>, keys: string[]): string | null {
+        const text = this.readText(source, keys);
+        if (!text) return null;
+        return this.normalizeDateString(text) || null;
+    }
+
+    private normalizeDateString(value: string): string {
+        const trimmed = value.trim();
+        if (!trimmed) return '';
+        if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+        const parsed = Date.parse(trimmed);
+        if (Number.isNaN(parsed)) return '';
+        const date = new Date(parsed);
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    private parseDateString(value: string | null | undefined): number | null {
+        if (!value) return null;
+        const parsed = Date.parse(value);
+        return Number.isNaN(parsed) ? null : parsed;
     }
 
     private hasKey(frontmatter: Record<string, unknown> | null | undefined, key: string): boolean {
@@ -421,6 +507,32 @@ export class ReadingService {
         updates[key] = normalized || null;
     }
 
+    private updateDisplayListField(
+        updates: Record<string, unknown>,
+        frontmatter: Record<string, unknown> | null | undefined,
+        singularKey: string,
+        pluralKey: string,
+        value: unknown
+    ): void {
+        const values = this.toDisplayList(value);
+        const prefersPlural = this.hasKey(frontmatter, pluralKey) && !this.hasKey(frontmatter, singularKey);
+
+        if (values.length === 0) {
+            updates[singularKey] = null;
+            updates[pluralKey] = null;
+            return;
+        }
+
+        if (values.length > 1 || prefersPlural) {
+            updates[pluralKey] = values;
+            updates[singularKey] = null;
+            return;
+        }
+
+        updates[singularKey] = values[0];
+        if (this.hasKey(frontmatter, pluralKey)) updates[pluralKey] = null;
+    }
+
     private updateListField(
         updates: Record<string, unknown>,
         frontmatter: Record<string, unknown> | null | undefined,
@@ -439,5 +551,18 @@ export class ReadingService {
         if (Array.isArray(value)) return value.map((entry) => String(entry).trim()).filter(Boolean);
         if (typeof value === 'string') return value.split(/[,;\n]+/).map((entry) => entry.trim()).filter(Boolean);
         return [];
+    }
+
+    private toDisplayList(value: unknown): string[] {
+        const result: string[] = [];
+        const seen = new Set<string>();
+        for (const entry of this.toStringArray(value)) {
+            const normalized = entry.trim();
+            const key = normalized.toLocaleLowerCase();
+            if (!normalized || seen.has(key)) continue;
+            seen.add(key);
+            result.push(normalized);
+        }
+        return result;
     }
 }

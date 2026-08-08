@@ -138,6 +138,8 @@ export async function getTmdbDetails(
         director: '',
         actors: getCastNames(show),
         rating: Number.isFinite(Number(show.vote_average)) ? Number(show.vote_average).toFixed(1) : '',
+        communityRating: Number.isFinite(Number(show.vote_average)) ? Number(show.vote_average).toFixed(1) : '',
+        communityVotes: Number.isFinite(Number(show.vote_count)) ? String(Math.trunc(Number(show.vote_count))) : '',
         seasons: isSeries ? String(seasons.length || '') : '',
         episodeCurrent: '0',
         episodeTotal: parts.reduce((sum, part) => sum + (part.episodeTotal ?? 0), 0).toString(),

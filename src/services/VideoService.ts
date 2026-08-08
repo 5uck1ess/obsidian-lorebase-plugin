@@ -3,8 +3,10 @@ import { FilterState, MovieItem, SeriesItem, SortField, SortOrder, VideoPart, Vi
 import { DEFAULT_COVER } from '../constants';
 import { MetadataService } from './MetadataService';
 import { filterAndSortMedia } from './media/filtering';
+import { extractSimpleFrontmatter } from './media/libraryViewState';
 import { getRandomItem, parseNumber, parseRelatedMedia, parseUserRating, parseYear, serializeRelatedMedia } from './media/parsers';
-import { collectFieldTags, collectTags, getAllMarkdownFiles, isTruthy } from './media/serviceUtils';
+import { collectFieldTags, collectTags, getAllMarkdownFiles, isTruthy, mapInFrameBatches } from './media/serviceUtils';
+import { upsertMarkdownSection } from './markdownSections';
 
 export type VideoMediaType = 'movie' | 'series';
 export type VideoItem = MovieItem | SeriesItem;
@@ -44,9 +46,10 @@ export class VideoService {
             return [];
         }
 
-        this.cache = getAllMarkdownFiles(folder)
-            .map((file) => this.parseFromCache(file))
-            .filter((item): item is VideoItem => Boolean(item));
+        this.cache = await mapInFrameBatches(
+            getAllMarkdownFiles(folder),
+            (file) => this.parseFromCache(file)
+        );
         this.cacheValid = true;
         return this.cache;
     }
@@ -62,6 +65,11 @@ export class VideoService {
             const description = this.readText(metadata, ['plot', 'summary', 'description']) || '';
             const poster = this.readText(metadata, ['poster', 'image']) || null;
             const horizontal = this.readText(metadata, ['poster_b', 'image_b', 'horizontal_poster']) || poster;
+            const verticalImageUrl = this.metadataService.getImageUrl(metadata.poster ?? metadata.image, metadata.cm_poster);
+            const horizontalImageUrl = this.metadataService.getImageUrl(
+                metadata.poster_b ?? metadata.image_b ?? metadata.horizontal_poster,
+                metadata.cm_poster
+            );
             const status = this.getStatus(this.readText(metadata, ['status']) || '') ?? 'planned';
             const partsKey = this.mediaType === 'series' ? 'series_parts' : 'movie_parts';
             const parts = this.parseParts(metadata[partsKey]);
@@ -78,27 +86,33 @@ export class VideoService {
                 userRating: parseUserRating(metadata.userRating ?? metadata.rating_user),
                 favorite: isTruthy(metadata.favorite),
                 poster,
-                imageUrl: poster || DEFAULT_COVER,
-                horizontalImageUrl: horizontal,
+                imageUrl: verticalImageUrl || poster || DEFAULT_COVER,
+                horizontalImageUrl: horizontalImageUrl || verticalImageUrl || horizontal,
                 hasCustomPoster: Boolean(poster),
                 isAdult: false,
                 status,
                 genres: collectFieldTags(metadata, ['genres', 'genre']),
                 tags: collectTags(metadata, cache?.tags),
                 sourceUrl: this.readText(metadata, ['url', 'source_url']),
+                started: this.readDateText(metadata, ['started', 'dateStarted', 'start_date']),
+                finished: this.readDateText(metadata, ['finished', 'dateFinished', 'finish_date', 'dateWatched', 'watched']),
                 integrationProvider: this.normalizeProvider(this.readText(metadata, ['integration_provider'])),
                 integrationId: this.readText(metadata, ['integration_id']),
                 parts,
                 activePartId,
                 relatedMedia: parseRelatedMedia(metadata.related_media),
                 rating: this.readText(metadata, ['rating', 'scoreImdb', 'imdbRating']) || '',
+                communityRating: parseNumber(metadata.communityRating ?? metadata.community_rating),
+                communityVotes: parseNumber(metadata.communityVotes ?? metadata.community_votes),
+                communityRatingProvider: this.readText(metadata, ['communityRatingProvider', 'community_rating_provider']) || null,
+                rawFields: extractSimpleFrontmatter(metadata),
             };
 
             if (this.mediaType === 'series') {
                 return {
                     ...base,
                     type: 'series',
-                    releaseDate: this.readText(metadata, ['released', 'release_date']) || null,
+                    releaseDate: this.readDateText(metadata, ['released', 'release_date']) || null,
                     runtime: this.readText(metadata, ['runtime']) || '',
                     director: this.readText(metadata, ['director', 'directors']) || '',
                     actors: this.readText(metadata, ['actors', 'cast']) || '',
@@ -113,7 +127,7 @@ export class VideoService {
             return {
                 ...base,
                 type: 'movie',
-                releaseDate: this.readText(metadata, ['released', 'release_date']) || null,
+                releaseDate: this.readDateText(metadata, ['released', 'release_date']) || null,
                 runtime: this.readText(metadata, ['runtime']) || '',
                 director: this.readText(metadata, ['director', 'directors']) || '',
                 actors: this.readText(metadata, ['actors', 'cast']) || '',
@@ -131,7 +145,7 @@ export class VideoService {
             sortField,
             sortOrder,
             isVisible: () => true,
-            getCompletedDate: () => null,
+            getCompletedDate: (item) => this.parseDateString(item.finished),
         });
     }
 
@@ -193,10 +207,29 @@ export class VideoService {
         if ('userRating' in updates) frontmatterUpdates.userRating = updates.userRating;
         if ('favorite' in updates) frontmatterUpdates.favorite = updates.favorite;
         if ('sourceUrl' in updates) this.updateTextField(frontmatterUpdates, frontmatter, ['url', 'source_url'], updates.sourceUrl);
-        if ('releaseDate' in updates) this.updateTextField(frontmatterUpdates, frontmatter, ['released', 'release_date', 'releaseDate'], updates.releaseDate);
+        if ('started' in updates) frontmatterUpdates.started = this.normalizeDateString(String(updates.started ?? '')) || null;
+        if ('finished' in updates) frontmatterUpdates.finished = this.normalizeDateString(String(updates.finished ?? '')) || null;
+        if ('releaseDate' in updates) this.updateTextField(
+            frontmatterUpdates,
+            frontmatter,
+            ['released', 'release_date', 'releaseDate'],
+            this.normalizeDateString(String(updates.releaseDate ?? ''))
+        );
         if ('runtime' in updates) this.updateTextField(frontmatterUpdates, frontmatter, ['runtime'], updates.runtime);
-        if ('director' in updates) this.updateTextField(frontmatterUpdates, frontmatter, ['director', 'directors'], updates.director);
-        if ('actors' in updates) this.updateTextField(frontmatterUpdates, frontmatter, ['actors', 'cast'], updates.actors);
+        if ('director' in updates) this.updateDisplayListField(
+            frontmatterUpdates,
+            frontmatter,
+            'director',
+            'directors',
+            updates.director
+        );
+        if ('actors' in updates) this.updateDisplayListField(
+            frontmatterUpdates,
+            frontmatter,
+            'cast',
+            'actors',
+            updates.actors
+        );
         if ('seasons' in updates) frontmatterUpdates.seasons = updates.seasons;
         if ('networks' in updates) this.updateListField(frontmatterUpdates, frontmatter, ['networks', 'network'], updates.networks);
         if ('studios' in updates) this.updateListField(frontmatterUpdates, frontmatter, ['studios', 'studio'], updates.studios);
@@ -205,6 +238,9 @@ export class VideoService {
         if ('relatedMedia' in updates) frontmatterUpdates.related_media = serializeRelatedMedia(updates.relatedMedia);
         if ('episodeCurrent' in updates) frontmatterUpdates.episode_current = updates.episodeCurrent;
         if ('episodeTotal' in updates) frontmatterUpdates.episode_total = updates.episodeTotal;
+        if ('communityRating' in updates) frontmatterUpdates.communityRating = updates.communityRating;
+        if ('communityVotes' in updates) frontmatterUpdates.communityVotes = updates.communityVotes;
+        if ('communityRatingProvider' in updates) frontmatterUpdates.communityRatingProvider = updates.communityRatingProvider;
         if (this.mediaType === 'series') {
             const activeId = typeof updates.activePartId === 'string' ? updates.activePartId : item.activePartId;
             const parts = Array.isArray(updates.parts) ? updates.parts : item.parts;
@@ -213,7 +249,18 @@ export class VideoService {
         }
 
         await this.metadataService.updateMetadata(file, frontmatterUpdates);
+        if ('myNotes' in updates) {
+            await this.updateMyNotesSection(file, String(updates.myNotes ?? ''));
+        }
         this.invalidateCache();
+    }
+
+    private async updateMyNotesSection(file: TFile, value: string): Promise<void> {
+        const content = await this.app.vault.read(file);
+        const next = upsertMarkdownSection(content, 'My Notes', value);
+        if (next !== content) {
+            await this.app.vault.modify(file, next);
+        }
     }
 
     async deleteItem(item: VideoItem): Promise<void> {
@@ -269,6 +316,43 @@ export class VideoService {
         return '';
     }
 
+    private readDateText(source: Record<string, unknown>, keys: string[]): string | null {
+        const text = this.readText(source, keys);
+        if (!text) return null;
+        return this.normalizeDateString(text) || null;
+    }
+
+    private normalizeDateString(value: string): string {
+        const trimmed = value.trim();
+        if (!trimmed) return '';
+        if (/^\d{4}$/.test(trimmed)) return '';
+        const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+        if (isoMatch) {
+            const year = Number(isoMatch[1]);
+            const month = Number(isoMatch[2]);
+            const day = Number(isoMatch[3]);
+            const date = new Date(Date.UTC(year, month - 1, day));
+            return date.getUTCFullYear() === year
+                && date.getUTCMonth() === month - 1
+                && date.getUTCDate() === day
+                ? trimmed
+                : '';
+        }
+        const parsed = Date.parse(trimmed);
+        if (Number.isNaN(parsed)) return '';
+        const date = new Date(parsed);
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    private parseDateString(value: string | null | undefined): number | null {
+        if (!value) return null;
+        const parsed = Date.parse(value);
+        return Number.isNaN(parsed) ? null : parsed;
+    }
+
     private hasKey(frontmatter: Record<string, unknown> | null | undefined, key: string): boolean {
         return Boolean(frontmatter && Object.prototype.hasOwnProperty.call(frontmatter, key));
     }
@@ -286,6 +370,32 @@ export class VideoService {
         const key = this.preferredKey(frontmatter, keys);
         const normalized = value === null || value === undefined ? '' : String(value).trim();
         updates[key] = normalized || null;
+    }
+
+    private updateDisplayListField(
+        updates: Record<string, unknown>,
+        frontmatter: Record<string, unknown> | null | undefined,
+        singularKey: string,
+        pluralKey: string,
+        value: unknown
+    ): void {
+        const values = this.toDisplayList(value);
+        const prefersPlural = this.hasKey(frontmatter, pluralKey) && !this.hasKey(frontmatter, singularKey);
+
+        if (values.length === 0) {
+            updates[singularKey] = null;
+            updates[pluralKey] = null;
+            return;
+        }
+
+        if (values.length > 1 || prefersPlural) {
+            updates[pluralKey] = values;
+            updates[singularKey] = null;
+            return;
+        }
+
+        updates[singularKey] = values[0];
+        if (this.hasKey(frontmatter, pluralKey)) updates[pluralKey] = null;
     }
 
     private updateListField(
@@ -318,5 +428,18 @@ export class VideoService {
         if (Array.isArray(value)) return value.map((entry) => String(entry).trim()).filter(Boolean);
         if (typeof value === 'string') return value.split(/[,;\n]+/).map((entry) => entry.trim()).filter(Boolean);
         return [];
+    }
+
+    private toDisplayList(value: unknown): string[] {
+        const result: string[] = [];
+        const seen = new Set<string>();
+        for (const entry of this.toStringArray(value)) {
+            const normalized = entry.trim();
+            const key = normalized.toLocaleLowerCase();
+            if (!normalized || seen.has(key)) continue;
+            seen.add(key);
+            result.push(normalized);
+        }
+        return result;
     }
 }

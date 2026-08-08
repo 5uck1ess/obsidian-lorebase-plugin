@@ -17,14 +17,14 @@ const ATTRIBUTION_SOURCES = [
     { name: 'Shikimori', mark: 'SH', url: 'https://shikimori.one', note: 'Anime metadata and images' },
     { name: 'Hardcover', mark: 'HC', url: 'https://hardcover.app', note: 'Book metadata and cover images' },
     { name: 'Google Books', mark: 'GB', url: 'https://books.google.com', note: 'Book metadata and cover images' },
-    { name: 'Jikan', mark: 'JK', url: 'https://jikan.moe', note: 'Manga metadata from MyAnimeList' },
+    { name: 'MangaUpdates', mark: 'MU', url: 'https://www.mangaupdates.com', note: 'Manga metadata and community ratings' },
     { name: 'MangaDex', mark: 'MD', url: 'https://mangadex.org', note: 'Manga metadata and cover images' },
     { name: 'TVmaze', mark: 'TV', url: 'https://www.tvmaze.com', note: 'Series metadata and images' },
     { name: 'OMDb', mark: 'OM', url: 'https://www.omdbapi.com', note: 'Movie and series metadata' },
 ] as const;
 
 export function renderAboutSection(context: SettingsSectionContext, container: HTMLElement): void {
-    context.createSectionHeader(container, 'lucide:info', t('settingsAbout'));
+    context.createSectionHeader(container, String.fromCodePoint(0x1F9E9), t('settingsAbout'));
 
     const card = container.createDiv({ cls: 'lorebase-about-card' });
     const header = card.createDiv({ cls: 'lorebase-about-header' });

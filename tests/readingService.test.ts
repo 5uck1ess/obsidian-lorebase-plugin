@@ -93,6 +93,7 @@ describe('ReadingService', () => {
                     chapter_total: 364,
                     volume_current: 1,
                     volume_total: 41,
+                    genres: ['Adult', 'Fantasy'],
                 },
             },
         });
@@ -101,6 +102,13 @@ describe('ReadingService', () => {
         const parsed = service.parseFromCache(activeFile) as MangaItem | null;
         const items = [parsed, service.parseFromCache(plannedFile)].filter((item): item is MangaItem => Boolean(item));
         const filtered = service.filterAndSort(items, { ...createBaseFilter(), statuses: ['watching'] }, 'rating', 'desc');
+        const adultOnly = service.filterAndSort(
+            items,
+            { ...createBaseFilter(), adultOnly: true },
+            'name',
+            'asc',
+            true
+        );
         const stats = service.calculateStats(items);
 
         expect(parsed).toMatchObject({
@@ -115,7 +123,9 @@ describe('ReadingService', () => {
         });
         expect(parsed?.parts).toHaveLength(2);
         expect(parsed?.artists).toEqual(['Tetsuya Tashiro']);
+        expect(items[1]?.isAdult).toBe(true);
         expect(filtered.map((item) => item.displayName)).toEqual(['Akame ga Kill!']);
+        expect(adultOnly.map((item) => item.displayName)).toEqual(['Berserk']);
         expect(stats.total).toBe(2);
         expect(stats.watching).toBe(1);
         expect(stats.planned).toBe(1);
@@ -123,16 +133,47 @@ describe('ReadingService', () => {
         expect(stats.avgRating).toBe(4);
     });
 
+    it('preserves the Jikan provider and MAL id on legacy manga notes', () => {
+        const file = createMockFile('Manga/Legacy.md', 'Legacy');
+        const app = createMockApp({
+            [file.path]: {
+                frontmatter: {
+                    type: 'manga',
+                    title: 'Legacy Manga',
+                    integration_provider: 'JIKAN',
+                    integration_id: 12345,
+                },
+            },
+        });
+        const service = new ReadingService(app, 'manga', 'Manga', createMetadataService(app));
+
+        expect(service.parseFromCache(file)).toMatchObject({
+            type: 'manga',
+            integrationProvider: 'jikan',
+            integrationId: '12345',
+        });
+    });
+
     it('normalizes progress updates, auto-completes, and serializes manga parts', async () => {
         const bookFile = createMockFile('Books/Complete.md', 'Complete');
         const mangaFile = createMockFile('Manga/Complete.md', 'Complete');
         const frontmatterByPath: Record<string, Record<string, unknown>> = {
-            [bookFile.path]: { type: 'book', title: 'Complete', status: 'watching', page_total: 100, chapter_total: 10 },
+            [bookFile.path]: {
+                type: 'book',
+                title: 'Complete',
+                status: 'watching',
+                page_total: 100,
+                chapter_total: 10,
+                publisher: 'Old Publisher',
+                authors: ['Old Author'],
+            },
             [mangaFile.path]: {
                 type: 'manga',
                 title: 'Complete Manga',
                 status: 'watching',
                 active_part_id: 'vol-1',
+                authors: ['Old Author'],
+                artists: ['Old Artist'],
                 manga_parts: [{ id: 'vol-1', kind: 'volume', title: 'Volume 1', volume: 1, chapter_current: 0, chapter_total: 10, status: 'watching' }],
             },
         };
@@ -174,8 +215,29 @@ describe('ReadingService', () => {
 
         expect(book).not.toBeNull();
         expect(manga).not.toBeNull();
-        await bookService.updateItem(book!, { pageCurrent: 150, pageTotal: 100, chapterCurrent: 10, chapterTotal: 10 });
-        await mangaService.updateItem(manga!, { chapterCurrent: 10, chapterTotal: 10 });
+        await bookService.updateItem(book!, {
+            pageCurrent: 150,
+            pageTotal: 100,
+            chapterCurrent: 10,
+            chapterTotal: 10,
+            publisher: 'Tor Books, Orbit, tor books',
+            authors: ['Christie Golden', 'Blizzard Writer', 'christie golden'],
+            releaseDate: '25 Dec 2013',
+        });
+        await mangaService.updateItem(manga!, {
+            chapterCurrent: 10,
+            chapterTotal: 10,
+            authors: ['Takahiro', 'Second Author', 'takahiro'],
+            artists: ['Tetsuya Tashiro', 'Second Artist', 'tetsuya tashiro'],
+            isAdult: true,
+            relatedMedia: [
+                {
+                    type: 'game',
+                    path: 'Games/Complete.md',
+                    title: 'Complete',
+                },
+            ],
+        });
 
         expect(frontmatterByPath[bookFile.path]).toMatchObject({
             page_current: 100,
@@ -183,9 +245,23 @@ describe('ReadingService', () => {
             chapter_current: 10,
             chapter_total: 10,
             status: 'completed',
+            publishers: ['Tor Books', 'Orbit'],
+            authors: ['Christie Golden', 'Blizzard Writer'],
+            released: '2013-12-25',
         });
+        expect(frontmatterByPath[bookFile.path]).not.toHaveProperty('publisher');
         expect(frontmatterByPath[mangaFile.path].status).toBe('completed');
+        expect(frontmatterByPath[mangaFile.path].Sex18).toBe(true);
+        expect(frontmatterByPath[mangaFile.path].authors).toEqual(['Takahiro', 'Second Author']);
+        expect(frontmatterByPath[mangaFile.path].artists).toEqual(['Tetsuya Tashiro', 'Second Artist']);
         expect(frontmatterByPath[mangaFile.path].active_part_id).toBe('vol-1');
+        expect(frontmatterByPath[mangaFile.path].related_media).toEqual([
+            {
+                type: 'game',
+                path: 'Games/Complete.md',
+                title: 'Complete',
+            },
+        ]);
         expect(frontmatterByPath[mangaFile.path].manga_parts).toEqual([
             {
                 id: 'vol-1',

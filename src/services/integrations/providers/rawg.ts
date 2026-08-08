@@ -75,6 +75,8 @@ export async function getRawgDetails(fetchJson: JsonFetcher, id: string, apiKey:
         developers,
         publishers,
         rating: toStringSafe(item.rating),
+        communityRating: toStringSafe(item.rating),
+        communityVotes: toStringSafe(item.ratings_count),
         metacritic: toStringSafe(item.metacritic),
         released,
         year,

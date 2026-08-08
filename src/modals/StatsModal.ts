@@ -69,6 +69,7 @@ export class StatsModal extends Modal {
     private renderMainStats(container: HTMLElement): void {
         const grid = container.createDiv({ cls: 'lorebase-stats-main-grid' });
         const isWatchMedia = this.mediaType !== 'game';
+        const isReadingMedia = this.mediaType === 'book' || this.mediaType === 'manga';
         const stats = this.stats as (GameStats & AnimeStats);
 
         // Total
@@ -82,7 +83,9 @@ export class StatsModal extends Modal {
         // Completed / Watched
         this.createStatCard(grid, {
             icon: '\u{2705}',
-            label: isWatchMedia ? t('statusCompleted') : t('statsCompleted'),
+            label: isWatchMedia
+                ? isReadingMedia ? t('statusReadCompleted') : t('statusCompleted')
+                : t('statsCompleted'),
             value: isWatchMedia ? stats.completed : (stats as GameStats).completed,
             percent: isWatchMedia
                 ? (stats.statusPercentages.completed || 0)
@@ -144,6 +147,7 @@ export class StatsModal extends Modal {
     private renderStatusDistribution(container: HTMLElement): void {
         const section = container.createDiv({ cls: 'lorebase-stats-section' });
         const isWatchMedia = this.mediaType !== 'game';
+        const isReadingMedia = this.mediaType === 'book' || this.mediaType === 'manga';
 
         const title = section.createDiv({ cls: 'lorebase-stats-section-title' });
         title.createSpan({ text: '\u{1F4C8}' });
@@ -151,12 +155,11 @@ export class StatsModal extends Modal {
 
         const grid = section.createDiv({ cls: 'lorebase-stats-status-grid' });
 
-        const isReadingMedia = this.mediaType === 'book' || this.mediaType === 'manga';
         const statusData = isWatchMedia
             ? [
                 { key: 'planned', icon: '\u{1F5D3}\u{FE0F}', label: isReadingMedia ? t('statusPlanToRead') : t('statusPlanned'), value: (this.stats as AnimeStats).planned, color: '#9e9e9e' },
                 { key: 'watching', icon: '\u{1F440}', label: isReadingMedia ? t('statusReading') : t('statusWatching'), value: (this.stats as AnimeStats).watching, color: '#2196f3' },
-                { key: 'completed', icon: '\u{2705}', label: t('statusCompleted'), value: (this.stats as AnimeStats).completed, color: '#4caf50' },
+                { key: 'completed', icon: '\u{2705}', label: isReadingMedia ? t('statusReadCompleted') : t('statusCompleted'), value: (this.stats as AnimeStats).completed, color: '#4caf50' },
                 { key: 'dropped', icon: '\u{1F494}', label: t('statusDropped'), value: (this.stats as AnimeStats).dropped, color: '#ff9800' },
                 { key: 'paused', icon: '\u{23F8}\u{FE0F}', label: t('statusPaused'), value: (this.stats as AnimeStats).paused, color: '#ffeb3b' },
             ]
@@ -164,7 +167,7 @@ export class StatsModal extends Modal {
                 { key: 'completed', icon: '\u{2705}', label: t('statusPlayed'), value: (this.stats as GameStats).completed, color: '#4caf50' },
                 { key: 'playing', icon: '\u{1F3AE}', label: t('statusPlaying'), value: (this.stats as GameStats).playing, color: '#2196f3' },
                 { key: 'dropped', icon: '\u{1F6AB}', label: t('statusDropped'), value: (this.stats as GameStats).dropped, color: '#ff9800' },
-                { key: 'wishlist', icon: '\u{1F516}', label: t('statusWishlist'), value: (this.stats as GameStats).wishlist, color: '#ff6fb1' },
+                { key: 'wishlist', icon: '\u{1F516}', label: t('statusWishlist'), value: (this.stats as GameStats).wishlist, color: 'var(--lorebase-wishlist-color)' },
                 { key: 'sandbox', icon: '\u{1F9E9}', label: t('statusSandbox'), value: (this.stats as GameStats).sandbox, color: '#ffeb3b' },
                 { key: 'notStarted', icon: '\u{23F8}\u{FE0F}', label: t('statusNotStarted'), value: (this.stats as GameStats).notStarted, color: '#9e9e9e' },
             ];

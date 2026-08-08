@@ -1,11 +1,12 @@
 import { Setting, SliderComponent, ToggleComponent, setIcon } from 'obsidian';
-import { CARD_SIZES, COLOR_PRESETS, DEFAULT_COVER, DEFAULT_GAME_TAG_PRESETS, DEFAULT_SETTINGS, HORIZONTAL_CARD_SIZES, RATING_EMOJI, STATUS_CONFIG } from '../../constants';
+import { CARD_SIZES, COLOR_PRESETS, DEFAULT_COVER, DEFAULT_GAME_TAG_PRESETS, DEFAULT_SETTINGS, HORIZONTAL_CARD_SIZES, PARTICLE_INTENSITY_MAX, PARTICLE_INTENSITY_MIN, RATING_EMOJI, STATUS_CONFIG } from '../../constants';
 import { i18n, t } from '../../localization';
-import type { BadgePosition, Language, LorebaseSettings, ParticleEffect, RatingBadgeMode, TagPreset } from '../../types';
+import type { BadgePosition, CardClickAction, CardStyle, CompletionDateBadgeFormat, Language, LorebaseSettings, ParticleEffect, RatingBadgeMode, TagPreset } from '../../types';
 import { ICON_CARD_CUSTOMIZATION, ICON_GENERAL, LABEL_RU, LABEL_UK } from './constants';
 import { addLorebaseDropdown, LorebaseDropdownHandle } from './customDropdown';
 import { createMediaTabs } from './mediaTabs';
 import { renderResetSettings } from './reset';
+import { normalizeObsidianTag } from '../settingsNormalization';
 import type { MediaTypeKey, SettingsSectionContext } from './types';
 
 type BadgeKey = keyof LorebaseSettings['badges'];
@@ -84,8 +85,11 @@ export function renderGeneralSettings(context: SettingsSectionContext, container
         .addSlider(slider => {
             intensitySlider = slider;
             slider
-                .setLimits(20, 150, 1)
-                .setValue(context.plugin.settings.particleIntensity)
+                .setLimits(PARTICLE_INTENSITY_MIN, PARTICLE_INTENSITY_MAX, 1)
+                .setValue(Math.min(
+                    PARTICLE_INTENSITY_MAX,
+                    Math.max(PARTICLE_INTENSITY_MIN, context.plugin.settings.particleIntensity)
+                ))
 
                 .setDisabled(context.plugin.settings.particleEffect === 'none')
                 .onChange(async (value) => {
@@ -139,6 +143,32 @@ export function renderGeneralSettings(context: SettingsSectionContext, container
                 });
         });
     addModeSetting.settingEl.addClass('lorebase-add-mode-choice-setting');
+
+    const cardClickSetting = new Setting(container)
+        .setName(i18n.getLanguage() === 'ru' ? 'Клик по карточке' : i18n.getLanguage() === 'uk' ? 'Клік по картці' : 'Card click')
+        .setDesc(i18n.getLanguage() === 'ru'
+            ? 'Что делать при обычном клике по карточке в библиотеке.'
+            : i18n.getLanguage() === 'uk'
+                ? 'Що робити при звичайному кліку по картці в бібліотеці.'
+                : 'Choose what a normal click on a library card does.');
+    addLorebaseDropdown<CardClickAction>(
+        cardClickSetting,
+        [
+            {
+                value: 'open',
+                label: i18n.getLanguage() === 'ru' ? 'Открывать заметку' : i18n.getLanguage() === 'uk' ? 'Відкривати нотатку' : 'Open note',
+            },
+            {
+                value: 'edit',
+                label: i18n.getLanguage() === 'ru' ? 'Открывать редактирование' : i18n.getLanguage() === 'uk' ? 'Відкривати редагування' : 'Edit item',
+            },
+        ],
+        context.plugin.settings.cardClickAction ?? 'open',
+        async (value) => {
+            context.plugin.settings.cardClickAction = value;
+            await context.plugin.saveSettings();
+        }
+    );
 
     renderResetSettings(context, container);
 }
@@ -203,6 +233,13 @@ function renderBadgesEditor(context: SettingsSectionContext, container: HTMLElem
     const previewAnimeProgress = imageContainer.createDiv({ cls: 'lorebase-card-metacritic lorebase-preview-anime-progress is-hidden' });
     const previewSeasonBadge = previewAnimeProgress.createSpan({ cls: 'lorebase-card-progress-season is-only', text: 'S 2/3' });
     const previewEpisodeBadge = previewAnimeProgress.createSpan({ cls: 'lorebase-card-progress-ep', text: 'EP 8/12' });
+    const previewProgressFooter = card.createDiv({ cls: 'lorebase-card-progress-footer lorebase-preview-progress-footer is-hidden' });
+    const previewProgressHeader = previewProgressFooter.createDiv({ cls: 'lorebase-card-progress-header' });
+    const previewProgressTitle = previewProgressHeader.createDiv({ cls: 'lorebase-card-progress-title', text: 'LOREBASE Preview Card' });
+    const previewProgressMeta = previewProgressHeader.createSpan({ cls: 'lorebase-card-progress-meta', text: 'EP 8/12' });
+    const previewProgressRow = previewProgressFooter.createDiv({ cls: 'lorebase-card-progress-row' });
+    const previewProgressTrack = previewProgressRow.createDiv({ cls: 'lorebase-card-progress-track' });
+    const previewProgressFill = previewProgressTrack.createDiv({ cls: 'lorebase-card-progress-fill' });
 
     const positions: BadgePosition[] = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
     const zoneLabels: Record<BadgePosition, string> = {
@@ -976,6 +1013,8 @@ function renderBadgesEditor(context: SettingsSectionContext, container: HTMLElem
         return null;
     };
 
+    const getActiveCardStyleSettings = (): LorebaseSettings['games'] | null => getActiveProgressSettings();
+
     const parseCssPixels = (value: string, fallback: number): number => {
         const parsed = Number.parseInt(value, 10);
         if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -1022,16 +1061,20 @@ function renderBadgesEditor(context: SettingsSectionContext, container: HTMLElem
     const applyPreviewDimensions = (): void => {
         const settings = getActiveMediaSettings();
         const isHorizontal = previewOrientation === 'horizontal';
+        const isProgressStyle = !isHorizontal && getActiveCardStyleSettings()?.cardStyle === 'progress';
         const dimensions = getPreviewDimensions(settings, previewOrientation);
         card.toggleClass('lorebase-card-horizontal', isHorizontal);
         card.setCssStyles({
             width: `${dimensions.width}px`,
-            height: `${dimensions.height}px`,
+            height: isProgressStyle ? 'auto' : `${dimensions.height}px`,
             maxWidth: isHorizontal ? '100%' : `${dimensions.width}px`,
             minWidth: isHorizontal ? `${dimensions.width}px` : '',
-            minHeight: isHorizontal ? `${dimensions.height}px` : '0',
+            minHeight: isHorizontal && !isProgressStyle ? `${dimensions.height}px` : '0',
         });
-        imageContainer.setCssStyles({ height: '100%' });
+        imageContainer.setCssStyles({
+            height: isProgressStyle ? `${dimensions.height}px` : '100%',
+            flexBasis: isProgressStyle ? `${dimensions.height}px` : '',
+        });
     };
 
     const getOverlayDragReferenceHeight = (): number => {
@@ -1218,6 +1261,24 @@ function renderBadgesEditor(context: SettingsSectionContext, container: HTMLElem
 
     const badgeElements = new Map<BadgeKey, HTMLButtonElement>();
 
+    const formatPreviewCompletionDate = (): string => {
+        const locale = i18n.getLanguage() === 'ru' ? 'ru-RU' : 'en-US';
+        const profile: MediaTypeKey = previewMode === 'game'
+            ? 'games'
+            : previewMode === 'movie'
+                ? 'movies'
+                : previewMode === 'book'
+                    ? 'books'
+                    : previewMode;
+        const format = context.plugin.settings.completionDateBadgeFormats?.[profile]
+            ?? context.plugin.settings.completionDateBadgeFormat
+            ?? 'short';
+        const options: Intl.DateTimeFormatOptions = format === 'full'
+            ? { month: 'short', day: 'numeric', year: 'numeric' }
+            : { month: 'short', day: 'numeric' };
+        return new Intl.DateTimeFormat(locale, options).format(new Date(Date.UTC(2025, 6, 22)));
+    };
+
     const renderBadgeContent = (
         badge: HTMLButtonElement,
         badgeKey: BadgeKey,
@@ -1226,11 +1287,7 @@ function renderBadgesEditor(context: SettingsSectionContext, container: HTMLElem
         badge.replaceChildren();
 
         if (badgeKey === 'status') {
-            const previewStatus = previewMode === 'game'
-                ? 'playing'
-                : previewMode === 'movie'
-                    ? 'completed'
-                    : 'watching';
+            const previewStatus = 'completed';
             const statusBadge = createDiv({ cls: `lorebase-card-status lorebase-status-${previewStatus}` });
             const iconPath = STATUS_CONFIG[previewStatus].pathD;
             statusBadge.appendChild(createSvgPathIcon(iconPath));
@@ -1238,13 +1295,13 @@ function renderBadgesEditor(context: SettingsSectionContext, container: HTMLElem
                 statusBadge.classList.add('is-icon-only');
             } else {
                 const statusLabel = previewMode === 'game'
-                    ? t('statusPlaying')
-                    : previewMode === 'movie'
-                        ? t('statusCompleted')
-                        : previewMode === 'book' || previewMode === 'manga'
-                            ? t('statusReading')
-                            : t('statusWatching');
-                statusBadge.createSpan({ text: statusLabel });
+                    ? t('statusPlayed')
+                    : previewMode === 'book' || previewMode === 'manga'
+                        ? t('statusReadCompleted')
+                        : t('statusCompleted');
+                statusBadge.createSpan({
+                    text: `${statusLabel} | ${formatPreviewCompletionDate()}`,
+                });
             }
             badge.appendChild(statusBadge);
             return;
@@ -1340,11 +1397,7 @@ function renderBadgesEditor(context: SettingsSectionContext, container: HTMLElem
 
     const applyPreviewMode = (): void => {
         const isAnime = previewMode === 'anime';
-        card.toggleClass('is-anime', isAnime);
-        card.toggleClass('is-book', previewMode === 'book');
-        card.toggleClass('is-manga', previewMode === 'manga');
-        applyPreviewDimensions();
-        previewTitle.textContent = previewMode === 'anime'
+        const previewTitleText = previewMode === 'anime'
             ? 'LOREBASE Anime Preview'
             : previewMode === 'movie'
                 ? 'LOREBASE Movie Preview'
@@ -1355,6 +1408,16 @@ function renderBadgesEditor(context: SettingsSectionContext, container: HTMLElem
                         : previewMode === 'manga'
                             ? 'LOREBASE Manga Preview'
                             : 'LOREBASE Preview Card';
+        const progressSettings = getActiveProgressSettings();
+        const isProgressStyle = getActiveCardStyleSettings()?.cardStyle === 'progress';
+        card.toggleClass('is-anime', isAnime);
+        card.toggleClass('is-series', previewMode === 'series');
+        card.toggleClass('is-book', previewMode === 'book');
+        card.toggleClass('is-manga', previewMode === 'manga');
+        card.toggleClass('lorebase-card-progress-style', isProgressStyle);
+        applyPreviewDimensions();
+        previewTitle.textContent = previewTitleText;
+        previewProgressTitle.textContent = previewTitleText;
         previewYear.textContent = '2026';
         previewFormat.textContent = 'TV';
         previewFormat.setCssStyles({ display: isAnime ? '' : 'none' });
@@ -1372,7 +1435,6 @@ function renderBadgesEditor(context: SettingsSectionContext, container: HTMLElem
                         : previewMode === 'manga'
                             ? previewDescriptionManga
                             : previewDescriptionGame;
-        const progressSettings = getActiveProgressSettings();
         const showSeason = previewMode === 'book' ? false : Boolean(progressSettings?.showAnimeSeasonProgress);
         const showEpisode = Boolean(progressSettings?.showAnimeEpisodeProgress);
         const showProgress = Boolean(progressSettings && (showSeason || showEpisode));
@@ -1392,6 +1454,23 @@ function renderBadgesEditor(context: SettingsSectionContext, container: HTMLElem
         previewEpisodeBadge.setCssStyles({ display: showProgress && showEpisode ? 'inline' : 'none' });
         previewSeasonBadge.toggleClass('is-hover-only', showProgress && showSeason && hasEpisodeBadge);
         previewSeasonBadge.toggleClass('is-only', showProgress && showSeason && !hasEpisodeBadge);
+        const progressMetaParts = [
+            showSeason ? previewSeasonBadge.textContent : null,
+            showEpisode ? previewEpisodeBadge.textContent : null,
+        ].filter((value): value is string => Boolean(value));
+        overlay.setCssStyles({ display: isProgressStyle ? 'none' : '' });
+        previewAnimeProgress.toggleClass('is-hidden', isProgressStyle || !showProgress);
+        previewProgressFooter.toggleClass('is-hidden', !isProgressStyle);
+        previewProgressMeta.textContent = progressMetaParts.join(' \u00B7  ');
+        previewProgressMeta.setCssStyles({ display: progressMetaParts.length ? '' : 'none' });
+        const fillPercent = previewMode === 'book'
+            ? 39
+            : previewMode === 'manga'
+                ? 24
+                : previewMode === 'series'
+                    ? 50
+                    : 67;
+        previewProgressFill.setCssStyles({ width: `${fillPercent}%` });
     };
 
     const renderPreview = (): void => {
@@ -1471,7 +1550,7 @@ function renderStatusLabelAndPlanSettings(context: SettingsSectionContext, conta
     }> = [
         { key: 'planned', label: t('statusPlanToRead'), icon: 'calendar-clock' },
         { key: 'watching', label: t('statusReading'), icon: 'book-open' },
-        { key: 'completed', label: t('statusCompleted'), icon: 'circle-check-big' },
+        { key: 'completed', label: t('statusReadCompleted'), icon: 'circle-check-big' },
         { key: 'dropped', label: t('statusDropped'), icon: 'circle-x' },
         { key: 'paused', label: t('statusPaused'), icon: 'pause' },
     ];
@@ -1654,6 +1733,7 @@ function renderStatusLabelAndPlanSettings(context: SettingsSectionContext, conta
                     return;
                 }
                 preset.label = trimmed;
+                preset.tag = normalizeObsidianTag(trimmed);
                 void persistPlans();
             });
 
@@ -1700,12 +1780,12 @@ function getPlanPresetLabel(id: string, fallback: string): string {
 
 function createUniquePlanPreset(existing: TagPreset[]): TagPreset {
     const label = t('settingsPlanNew');
-    const baseTag = label.replace(/^#+/, '').trim().toLowerCase() || 'new plan';
+    const baseTag = normalizeObsidianTag(label) || 'new-plan';
     const usedTags = new Set(existing.map((preset) => preset.tag));
     let tag = baseTag;
     let suffix = 2;
     while (usedTags.has(tag)) {
-        tag = `${baseTag} ${suffix}`;
+        tag = `${baseTag}-${suffix}`;
         suffix += 1;
     }
 
@@ -1757,6 +1837,29 @@ function renderBadgeOptions(
         if (mode === 'book') return context.plugin.settings.books;
         if (mode === 'manga') return context.plugin.settings.manga;
         return null;
+    };
+
+    const getActiveCardStyleSettings = (): LorebaseSettings['games'] | null => {
+        const mode = getPreviewMode();
+        if (mode === 'anime') return context.plugin.settings.anime;
+        if (mode === 'series') return context.plugin.settings.series;
+        if (mode === 'book') return context.plugin.settings.books;
+        if (mode === 'manga') return context.plugin.settings.manga;
+        return null;
+    };
+
+    const getActiveBookCoverSettings = (): LorebaseSettings['games'] | null => {
+        const mode = getPreviewMode();
+        if (mode === 'book') return context.plugin.settings.books;
+        if (mode === 'manga') return context.plugin.settings.manga;
+        return null;
+    };
+
+    const getActiveCompletionDateFormat = (): CompletionDateBadgeFormat => {
+        const profile = getActiveProfile();
+        return context.plugin.settings.completionDateBadgeFormats?.[profile]
+            ?? context.plugin.settings.completionDateBadgeFormat
+            ?? 'short';
     };
 
     const getActiveOrientation = (): BadgeOrientationKey => (
@@ -1824,6 +1927,9 @@ function renderBadgeOptions(
     let statusIconOnlyToggle: ToggleComponent | null = null;
     let favoritePulseToggle: ToggleComponent | null = null;
     let ratingModeDropdown: LorebaseDropdownHandle<RatingBadgeMode> | null = null;
+    let cardStyleDropdown: LorebaseDropdownHandle<CardStyle> | null = null;
+    let bookCoverEffectToggle: ToggleComponent | null = null;
+    let completionDateFormatDropdown: LorebaseDropdownHandle<CompletionDateBadgeFormat> | null = null;
 
     const syncBadgeOptionControls = (): void => {
         syncingControls = true;
@@ -1885,6 +1991,62 @@ function renderBadgeOptions(
             forBadgeTargets((profile, orientation) => {
                 getBadgeSettings(profile, orientation).rating.mode = value;
             });
+            renderBadgesPreview();
+            refreshVisualsSoon();
+            void context.plugin.saveSettings();
+        }
+    );
+
+    const cardStyleSetting = new Setting(container)
+        .setName(t('settingsCardStyle'))
+        .setDesc(t('settingsCardStyleDesc'));
+    cardStyleDropdown = addLorebaseDropdown<CardStyle>(
+        cardStyleSetting,
+        [
+            { value: 'hover', label: t('settingsCardStyleHover') },
+            { value: 'progress', label: t('settingsCardStyleProgress') },
+        ],
+        getActiveCardStyleSettings()?.cardStyle ?? 'hover',
+        (value) => {
+            if (syncingControls) return;
+            const settings = getActiveCardStyleSettings();
+            if (!settings) return;
+            settings.cardStyle = value;
+            renderBadgesPreview();
+            context.plugin.refreshViews();
+            void context.plugin.saveSettings();
+        }
+    );
+
+    const bookCoverEffectSetting = new Setting(container)
+        .setName(t('settingsBookCoverEffect'))
+        .setDesc(t('settingsBookCoverEffectDesc'))
+        .addToggle(toggle => {
+            bookCoverEffectToggle = toggle;
+            toggle
+                .setValue(getActiveBookCoverSettings()?.bookCoverEffect ?? false)
+                .onChange((value) => {
+                    if (syncingControls) return;
+                    const settings = getActiveBookCoverSettings();
+                    if (!settings) return;
+                    settings.bookCoverEffect = value;
+                    refreshVisualsSoon();
+                    void context.plugin.saveSettings();
+                });
+        });
+
+    const completionDateFormatSetting = new Setting(container)
+        .setName(t('settingsCompletionDateBadgeFormat'));
+    completionDateFormatDropdown = addLorebaseDropdown<CompletionDateBadgeFormat>(
+        completionDateFormatSetting,
+        [
+            { value: 'short', label: t('settingsCompletionDateBadgeFormatShort') },
+            { value: 'full', label: t('settingsCompletionDateBadgeFormatFull') },
+        ],
+        getActiveCompletionDateFormat(),
+        (value) => {
+            if (syncingControls) return;
+            context.plugin.settings.completionDateBadgeFormats[getActiveProfile()] = value;
             renderBadgesPreview();
             refreshVisualsSoon();
             void context.plugin.saveSettings();
@@ -1953,8 +2115,21 @@ function renderBadgeOptions(
         episodeProgressToggle?.setValue(settings.showAnimeEpisodeProgress);
     };
 
+    const syncCardCustomizationSettingsVisibility = (): void => {
+        const cardStyleSettings = getActiveCardStyleSettings();
+        const bookCoverSettings = getActiveBookCoverSettings();
+        cardStyleSetting.settingEl.setCssStyles({ display: cardStyleSettings ? '' : 'none' });
+        bookCoverEffectSetting.settingEl.setCssStyles({ display: bookCoverSettings ? '' : 'none' });
+        syncingControls = true;
+        if (cardStyleSettings) cardStyleDropdown?.setValue(cardStyleSettings.cardStyle ?? 'hover');
+        if (bookCoverSettings) bookCoverEffectToggle?.setValue(bookCoverSettings.bookCoverEffect);
+        completionDateFormatDropdown?.setValue(getActiveCompletionDateFormat());
+        syncingControls = false;
+    };
+
     const syncPreviewLinkedControls = (): void => {
         syncAnimeProgressSettingsVisibility();
+        syncCardCustomizationSettingsVisibility();
         syncBadgeOptionControls();
     };
 

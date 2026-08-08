@@ -93,6 +93,7 @@ describe('shikimori provider', () => {
             studios: ['Pierrot'],
             year: '2002',
             imdbRating: '7.99',
+            communityRating: '7.99',
             url: 'https://shikimori.net/animes/20-naruto',
             format: 'TV',
             parts: [

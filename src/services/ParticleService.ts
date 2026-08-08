@@ -1,9 +1,10 @@
 ﻿import { ParticleEffect } from '../types';
+import { PARTICLE_INTENSITY_MAX, PARTICLE_INTENSITY_MIN } from '../constants';
 
 export class ParticleService {
     private container: HTMLElement | null = null;
     private effect: ParticleEffect = 'none';
-    private intensity = 70;
+    private intensity = PARTICLE_INTENSITY_MAX;
     private rafId: number | null = null;
 
     apply(effect: ParticleEffect, intensity: number): void {
@@ -39,8 +40,11 @@ export class ParticleService {
     }
 
     private clampIntensity(value: number): number {
-        if (!Number.isFinite(value)) return 70;
-        return Math.min(150, Math.max(20, Math.trunc(value)));
+        if (!Number.isFinite(value)) return PARTICLE_INTENSITY_MAX;
+        return Math.min(
+            PARTICLE_INTENSITY_MAX,
+            Math.max(PARTICLE_INTENSITY_MIN, Math.trunc(value))
+        );
     }
 
     private ensureContainer(): void {

@@ -23,6 +23,7 @@ describe('AnimeService', () => {
                     format: 'movie',
                     dateWatched: '2025-01-02',
                     genres: 'Action, Adventure',
+                    studios: 'Pierrot, Studio Signpost',
                     tags: ['Shonen'],
                     integration_provider: 'anilist',
                     integration_id: '12345',
@@ -42,10 +43,49 @@ describe('AnimeService', () => {
         expect(parsed?.favorite).toBe(true);
         expect(parsed?.year).toBe(2002);
         expect(parsed?.genres).toContain('action');
+        expect(parsed?.studios).toEqual(['Pierrot', 'Studio Signpost']);
         expect(parsed?.tags).toContain('classic');
         expect(parsed?.dateWatched).toBeTypeOf('number');
         expect(parsed?.integrationProvider).toBe('anilist');
         expect(parsed?.integrationId).toBe('12345');
+    });
+
+    it('keeps local image paths available when direct resource resolution is not ready', () => {
+        const file = createMockFile('Anime/Frieren.md', 'Frieren');
+        const imagePath = 'files/lorebase/images/anime/Sousou no Frieren - Image.jpg';
+        const app = createMockApp({
+            [file.path]: {
+                frontmatter: {
+                    type: 'anime',
+                    title: 'Sousou no Frieren',
+                    image: imagePath,
+                },
+            },
+        });
+
+        const service = new AnimeService(app, createMetadataService(app));
+        const parsed = service.parseAnimeFromCache(file);
+
+        expect(parsed?.imageUrl).toBe(imagePath);
+    });
+
+    it('recovers missing provider identity from a legacy anime source URL', () => {
+        const cases = [
+            ['https://anilist.co/anime/20613/Akame-ga-Kill/', 'anilist', '20613'],
+            ['https://myanimelist.net/anime/22199/Akame_ga_Kill', 'jikan', '22199'],
+            ['https://shikimori.one/animes/z22199-akame-ga-kill', 'shikimori', '22199'],
+        ] as const;
+
+        for (const [url, provider, id] of cases) {
+            const file = createMockFile(`Anime/${provider}.md`, provider);
+            const app = createMockApp({
+                [file.path]: { frontmatter: { type: 'anime', url } },
+            });
+            const parsed = new AnimeService(app, createMetadataService(app)).parseAnimeFromCache(file);
+
+            expect(parsed?.integrationProvider).toBe(provider);
+            expect(parsed?.integrationId).toBe(id);
+        }
     });
 
     it('uses frontmatter title or name as display name before file basename', () => {
@@ -73,6 +113,49 @@ describe('AnimeService', () => {
         expect(service.parseAnimeFromCache(titleFile)?.displayName).toBe('Attack on Titan');
         expect(service.parseAnimeFromCache(nameFile)?.displayName).toBe('Fullmetal Alchemist');
         expect(service.parseAnimeFromCache(fallbackFile)?.displayName).toBe('Fallback_Title');
+    });
+
+    it('updates the existing anime title field when the display name changes', async () => {
+        const titleFile = createMockFile('Anime/Title.md', 'Title');
+        const nameFile = createMockFile('Anime/Name.md', 'Name');
+        const frontmatterByPath: Record<string, Record<string, unknown>> = {
+            [titleFile.path]: { title: 'Old title' },
+            [nameFile.path]: { name: 'Old name' },
+        };
+        const app = {
+            metadataCache: {
+                getFileCache(file: TFile): unknown {
+                    return { frontmatter: frontmatterByPath[file.path] };
+                },
+            },
+            vault: {
+                getAbstractFileByPath(path: string): TFile | null {
+                    if (path === titleFile.path) return titleFile;
+                    if (path === nameFile.path) return nameFile;
+                    return null;
+                },
+            },
+            fileManager: {
+                async processFrontMatter(file: TFile, callback: (frontmatter: Record<string, unknown>) => void): Promise<void> {
+                    callback(frontmatterByPath[file.path]);
+                },
+            },
+        } as unknown as App;
+        const service = new AnimeService(app, createMetadataService(app));
+
+        await service.updateAnime(
+            { filePath: titleFile.path } as AnimeItem,
+            { displayName: 'New title', studios: ['Bones', 'Studio Bones', 'bones'] }
+        );
+        await service.updateAnime({ filePath: nameFile.path } as AnimeItem, { displayName: 'New name' });
+
+        expect(frontmatterByPath[titleFile.path]).toMatchObject({
+            title: 'New title',
+            studios: ['Bones', 'Studio Bones'],
+        });
+        expect(frontmatterByPath[titleFile.path]).not.toHaveProperty('name');
+        expect(frontmatterByPath[nameFile.path]).toMatchObject({ name: 'New name' });
+        expect(frontmatterByPath[nameFile.path]).not.toHaveProperty('title');
     });
 
     it('parses anime_parts and uses the active part for legacy progress fields', () => {

@@ -1,11 +1,27 @@
-import { requestUrl } from 'obsidian';
-import { MangaDetails, SearchResult } from '../types';
-import { JsonFetcher, asObject, getArray, getObject, getString, mapStringList, stripHtml } from './common';
+import type { AnimeFormat } from '../../../types';
+import { AnimeDetails, IntegrationAnimePart, IntegrationMangaPart, MangaDetails, SearchResult } from '../types';
+import {
+    JsonFetcher,
+    asObject,
+    getArray,
+    getObject,
+    getString,
+    mapAnimeFormat,
+    mapStringList,
+    stripHtml,
+} from './common';
 
-interface JikanOptions {
+interface JikanSearchOptions {
     page?: number;
     pageSize?: number;
 }
+
+const JIKAN_BASE_URL = 'https://api.jikan.moe/v4';
+const SHIKIMORI_GRAPHQL_URL = 'https://shikimori.net/api/graphql';
+const JIKAN_HEADERS = {
+    'Accept': 'application/json',
+    'User-Agent': 'LOREBASE/2.0 (Obsidian plugin; metadata search)',
+};
 
 function withHasNext<T>(items: T[], hasNext: boolean): T[] {
     Object.defineProperty(items, 'hasNext', {
@@ -16,49 +32,45 @@ function withHasNext<T>(items: T[], hasNext: boolean): T[] {
     return items;
 }
 
-export async function searchJikanManga(
+export async function searchJikan(
     fetchJson: JsonFetcher,
     query: string,
-    options: JikanOptions = {}
+    options: JikanSearchOptions = {}
 ): Promise<SearchResult[]> {
-    if (!query.trim()) return [];
-    if (/^\d+$/.test(query.trim())) {
-        const details = await getJikanMangaDetails(fetchJson, query.trim());
-        if (!details) return [];
-        return withHasNext([{
-            id: query.trim(),
-            title: details.name,
-            subtitle: details.authors.join(', '),
-            provider: 'jikan' as const,
-            image: details.poster,
-            year: details.year,
-            format: 'Manga / Jikan',
-        }], false);
-    }
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) return [];
+
     const page = Math.max(1, options.page ?? 1);
-    const pageSize = Math.max(1, options.pageSize ?? 10);
-    const url = new URL('https://api.jikan.moe/v4/manga');
-    url.searchParams.set('q', query);
+    const pageSize = Math.min(25, Math.max(1, options.pageSize ?? 10));
+    const url = new URL(`${JIKAN_BASE_URL}/anime`);
+    url.searchParams.set('q', normalizedQuery);
     url.searchParams.set('page', String(page));
-    url.searchParams.set('limit', String(Math.min(pageSize, 25)));
+    url.searchParams.set('limit', String(pageSize));
     url.searchParams.set('sfw', 'true');
 
-    const root = await fetchJikanJson(fetchJson, url.toString());
-    if (!root) return searchMyAnimeListManga(query, pageSize);
-    const data = getArray(root, 'data');
-    if (!data.length) return searchMyAnimeListManga(query, pageSize);
-
-    const mapped = data.map((entry) => {
+    let root: Record<string, unknown> | null = null;
+    try {
+        root = asObject(await fetchJson(url.toString(), JIKAN_HEADERS));
+    } catch {
+        return searchJikanViaShikimori(fetchJson, normalizedQuery, page, pageSize);
+    }
+    const results = getArray(root, 'data');
+    if (!results.length) {
+        return searchJikanViaShikimori(fetchJson, normalizedQuery, page, pageSize);
+    }
+    const mapped = results.map((entry) => {
         const item = asObject(entry);
-        const images = getObject(getObject(item, 'images'), 'jpg') || getObject(getObject(item, 'images'), 'webp');
+        const image = getJikanImage(item);
+        const title = getJikanTitle(item);
+        const originalTitle = getString(item, 'title');
         return {
             id: getString(item, 'mal_id'),
-            title: getString(item, 'title') || getString(item, 'title_english') || 'Untitled',
-            subtitle: getString(item, 'title_japanese'),
+            title,
+            subtitle: originalTitle && originalTitle !== title ? originalTitle : getString(item, 'title_japanese'),
             provider: 'jikan' as const,
-            image: getString(images, 'large_image_url') || getString(images, 'image_url'),
+            image,
             year: getJikanYear(item),
-            format: getString(item, 'type') || 'Manga / Jikan',
+            format: mapAnimeFormat(getString(item, 'type')),
         };
     }).filter((item) => item.id && item.title);
 
@@ -66,175 +78,255 @@ export async function searchJikanManga(
     return withHasNext(mapped, Boolean(pagination?.has_next_page));
 }
 
-export async function getJikanMangaDetails(fetchJson: JsonFetcher, id: string): Promise<MangaDetails | null> {
-    if (!id) return null;
-    const root = await fetchJikanJson(fetchJson, `https://api.jikan.moe/v4/manga/${encodeURIComponent(id)}`);
-    if (!root) return null;
+async function searchJikanViaShikimori(
+    fetchJson: JsonFetcher,
+    query: string,
+    page: number,
+    pageSize: number
+): Promise<SearchResult[]> {
+    const gql = `query ($search: String!, $limit: Int!, $page: Int!) {
+  animes(search: $search, limit: $limit, page: $page) {
+    id
+    malId
+    name
+    russian
+    kind
+    airedOn {
+      year
+    }
+    poster {
+      originalUrl
+      mainUrl
+    }
+  }
+}`;
+    const root = asObject(await fetchJson(
+        SHIKIMORI_GRAPHQL_URL,
+        { ...JIKAN_HEADERS, 'Content-Type': 'application/json' },
+        'POST',
+        JSON.stringify({
+            query: gql,
+            variables: { search: query, limit: pageSize, page },
+        })
+    ));
+    const data = getObject(root, 'data');
+    const results = getArray(data, 'animes');
+    const mapped = results.map((entry) => {
+        const item = asObject(entry);
+        const malId = getString(item, 'malId') || getString(item, 'id');
+        const title = getString(item, 'name') || getString(item, 'russian') || 'Unknown';
+        const russian = getString(item, 'russian');
+        return {
+            id: malId,
+            title,
+            subtitle: russian && russian !== title ? russian : '',
+            provider: 'jikan' as const,
+            image: getShikimoriImage(item),
+            year: getString(getObject(item, 'airedOn'), 'year'),
+            format: mapAnimeFormat(getString(item, 'kind')),
+            sortScore: getFallbackSearchScore(title, russian, query),
+        };
+    }).filter((item) => item.id && item.title)
+        .sort((a, b) => b.sortScore - a.sortScore)
+        .map(({ sortScore: _sortScore, ...item }) => item);
+
+    return withHasNext(mapped, results.length >= pageSize);
+}
+
+export async function getJikanDetails(
+    fetchJson: JsonFetcher,
+    id: string,
+    options: { includeParts?: boolean } = {}
+): Promise<AnimeDetails | null> {
+    const numericId = Number.parseInt(id, 10);
+    if (!Number.isFinite(numericId)) return null;
+
+    const root = asObject(await fetchJson(
+        `${JIKAN_BASE_URL}/anime/${numericId}/full`,
+        JIKAN_HEADERS
+    ));
     const item = getObject(root, 'data');
     if (!item) return null;
 
-    const images = getObject(getObject(item, 'images'), 'jpg') || getObject(getObject(item, 'images'), 'webp');
-    const authors = mapStringList(getArray(item, 'authors'), (entry) => getString(asObject(entry), 'name'));
-    const genres = [
-        ...mapStringList(getArray(item, 'genres'), (entry) => getString(asObject(entry), 'name')),
-        ...mapStringList(getArray(item, 'themes'), (entry) => getString(asObject(entry), 'name')),
-        ...mapStringList(getArray(item, 'demographics'), (entry) => getString(asObject(entry), 'name')),
+    const tags = [
+        ...mapStringList(getArray(item, 'genres'), getNamedEntry),
+        ...mapStringList(getArray(item, 'explicit_genres'), getNamedEntry),
+        ...mapStringList(getArray(item, 'themes'), getNamedEntry),
+        ...mapStringList(getArray(item, 'demographics'), getNamedEntry),
     ];
+    const studios = mapStringList(getArray(item, 'studios'), getNamedEntry);
+    const score = getString(item, 'score');
+    const image = getJikanImage(item);
+    const parts = options.includeParts === false ? [] : [buildJikanRootPart(item, numericId)];
+
+    return {
+        kind: 'anime',
+        name: getJikanTitle(item),
+        description: stripHtml(getString(item, 'synopsis')),
+        image,
+        imageHorizontal: image,
+        tags: Array.from(new Set(tags)),
+        studios,
+        year: getJikanYear(item),
+        imdbRating: score,
+        communityRating: score,
+        communityVotes: getString(item, 'scored_by'),
+        url: getString(item, 'url') || `https://myanimelist.net/anime/${numericId}`,
+        format: mapAnimeFormat(getString(item, 'type')),
+        parts,
+    };
+}
+
+/**
+ * Loads metadata for manga notes created by Lorebase versions where Jikan was
+ * a manga provider. It is intentionally details-only: new manga searches use
+ * AniList, Shikimori, MangaUpdates, or MangaDex, while existing MAL ids remain
+ * refreshable until the user explicitly relinks the note.
+ */
+export async function getLegacyJikanMangaDetails(
+    fetchJson: JsonFetcher,
+    id: string
+): Promise<MangaDetails | null> {
+    const numericId = Number.parseInt(id, 10);
+    if (!Number.isFinite(numericId)) return null;
+
+    const root = asObject(await fetchJson(
+        `${JIKAN_BASE_URL}/manga/${numericId}`,
+        JIKAN_HEADERS
+    ));
+    const item = getObject(root, 'data');
+    if (!item) return null;
+
+    const contributors = getArray(item, 'authors').map(asObject);
+    const authors = mapStringList(contributors, getNamedEntry);
+    const artists = mapStringList(
+        contributors.filter((entry) => getString(entry, 'type').toLowerCase().includes('art')),
+        getNamedEntry
+    );
+    const genres = [
+        ...mapStringList(getArray(item, 'genres'), getNamedEntry),
+        ...mapStringList(getArray(item, 'explicit_genres'), getNamedEntry),
+        ...mapStringList(getArray(item, 'themes'), getNamedEntry),
+        ...mapStringList(getArray(item, 'demographics'), getNamedEntry),
+    ];
+    const score = getString(item, 'score');
+    const image = getJikanImage(item);
 
     return {
         kind: 'manga',
-        name: getString(item, 'title') || getString(item, 'title_english') || 'Untitled',
+        name: getJikanTitle(item),
         description: stripHtml(getString(item, 'synopsis')),
-        poster: getString(images, 'large_image_url') || getString(images, 'image_url'),
-        posterHorizontal: getString(images, 'large_image_url') || getString(images, 'image_url'),
+        poster: image,
+        posterHorizontal: image,
         authors,
-        artists: [],
+        artists,
         genres: Array.from(new Set(genres)),
+        isAdult: genres.some((genre) => genre.toLowerCase() === 'hentai'),
         year: getJikanYear(item),
         chapters: getString(item, 'chapters'),
         volumes: getString(item, 'volumes'),
-        rating: getString(item, 'score'),
-        url: getString(item, 'url'),
-        parts: buildJikanParts(item),
+        rating: score,
+        communityRating: score,
+        communityVotes: getString(item, 'scored_by'),
+        url: getString(item, 'url') || `https://myanimelist.net/manga/${numericId}`,
+        parts: buildLegacyJikanMangaParts(item),
     };
 }
 
-function jikanHeaders(): Record<string, string> {
-    return {
-        'Accept': 'application/json',
-        'User-Agent': 'LOREBASE Obsidian plugin',
-    };
-}
-
-async function fetchJikanJson(fetchJson: JsonFetcher, url: string): Promise<Record<string, unknown> | null> {
-    for (let attempt = 0; attempt < 2; attempt++) {
-        let root: Record<string, unknown> | null = null;
-        try {
-            root = asObject(await fetchJson(url, jikanHeaders()));
-        } catch {
-            root = null;
-        }
-        if (root && !isTransientJikanFailure(root)) {
-            return root;
-        }
-        if (attempt === 0) {
-            await delay(900);
-        }
-    }
-    return null;
-}
-
-function isTransientJikanFailure(root: Record<string, unknown>): boolean {
-    const status = Number(root.status);
-    return status === 429 || status >= 500;
-}
-
-function delay(ms: number): Promise<void> {
-    return new Promise(resolve => window.setTimeout(resolve, ms));
-}
-
-async function searchMyAnimeListManga(query: string, pageSize: number): Promise<SearchResult[]> {
-    try {
-        const url = new URL('https://myanimelist.net/manga.php');
-        url.searchParams.set('q', query);
-        url.searchParams.set('cat', 'manga');
-        const response = await requestUrl({
-            url: url.toString(),
-            method: 'GET',
-            headers: {
-                'Accept': 'text/html,application/xhtml+xml',
-                'User-Agent': 'Mozilla/5.0 LOREBASE Obsidian plugin',
-            },
-        });
-        return parseMyAnimeListMangaSearch(response.text ?? '', pageSize);
-    } catch {
-        return [];
-    }
-}
-
-function parseMyAnimeListMangaSearch(html: string, pageSize: number): SearchResult[] {
-    const results: SearchResult[] = [];
-    const seen = new Set<string>();
-    const rows = html.split(/<tr\b/i);
-    for (const row of rows) {
-        if (!row.includes('data-l-content-type="manga"')) continue;
-        const id = matchFirst(row, /data-l-content-id="(\d+)"/i)
-            || matchFirst(row, /\/manga\/(\d+)\//i);
-        if (!id || seen.has(id)) continue;
-
-        const title = decodeHtml(
-            matchFirst(row, /<strong>([\s\S]*?)<\/strong>/i)
-            || matchFirst(row, /<img[^>]+alt="([^"]+)"/i)
-        ).trim();
-        if (!title) continue;
-
-        const image = normalizeMalImage(decodeHtml(
-            matchFirst(row, /data-srcset="[^"]*?,\s*([^"\s]+)\s+2x/i)
-            || matchFirst(row, /data-src="([^"]+)"/i)
-            || matchFirst(row, /src="([^"]+)"/i)
-        ));
-        const format = decodeHtml(matchFirst(row, /<td[^>]*class="[^"]*\bac\b[^"]*"[^>]*>\s*([^<]+?)\s*<\/td>/i)).trim();
-
-        seen.add(id);
-        results.push({
-            id,
-            title,
-            subtitle: '',
-            provider: 'jikan',
-            image,
-            year: '',
-            format: format || 'Manga / Jikan',
-        });
-        if (results.length >= pageSize) break;
-    }
-    return withHasNext(results, results.length >= pageSize);
-}
-
-function matchFirst(value: string, pattern: RegExp): string {
-    return value.match(pattern)?.[1] ?? '';
-}
-
-function normalizeMalImage(value: string): string {
-    if (!value) return '';
-    return value
-        .replace(/&amp;/g, '&')
-        .replace(/\/r\/\d+x\d+(?=\/images\/)/, '')
-        .replace(/\?.*$/, '');
-}
-
-function decodeHtml(value: string): string {
-    return value
-        .replace(/<[^>]*>/g, '')
-        .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/&#039;/g, "'")
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/\s+/g, ' ');
-}
-
-function buildJikanParts(item: Record<string, unknown>) {
-    const volumes = Number.parseInt(getString(item, 'volumes'), 10);
-    const chapters = Number.parseInt(getString(item, 'chapters'), 10);
-    if (!Number.isFinite(volumes) || volumes <= 0) return [];
-    const perVolume = Number.isFinite(chapters) && chapters > 0 ? Math.ceil(chapters / volumes) : null;
+function buildLegacyJikanMangaParts(item: Record<string, unknown>): IntegrationMangaPart[] {
+    const volumes = getNumber(item, 'volumes');
+    if (!volumes || volumes <= 0) return [];
+    const chapters = getNumber(item, 'chapters');
+    const chaptersPerVolume = chapters && chapters > 0 ? Math.ceil(chapters / volumes) : null;
     return Array.from({ length: Math.min(volumes, 200) }, (_, index) => ({
         id: `volume-${index + 1}`,
-        kind: 'volume' as const,
+        kind: 'volume',
         title: `Volume ${index + 1}`,
         volumeNumber: index + 1,
         chapterCurrent: 0,
-        chapterTotal: perVolume,
-        status: 'planned' as const,
+        chapterTotal: chaptersPerVolume,
+        status: 'planned',
     }));
 }
 
+function buildJikanRootPart(item: Record<string, unknown>, id: number): IntegrationAnimePart {
+    const kind = mapJikanKind(getString(item, 'type'));
+    return {
+        id: `jikan-${id}`,
+        kind,
+        title: getJikanTitle(item),
+        seasonNumber: kind === 'tv' ? 1 : null,
+        episodeCurrent: 0,
+        episodeTotal: getNumber(item, 'episodes'),
+        status: 'planned',
+    };
+}
+
+function getNamedEntry(entry: unknown): string {
+    return getString(asObject(entry), 'name');
+}
+
+function getJikanTitle(item: Record<string, unknown> | null): string {
+    return getString(item, 'title_english')
+        || getString(item, 'title')
+        || getString(item, 'title_japanese')
+        || 'Unknown';
+}
+
+function getJikanImage(item: Record<string, unknown> | null): string {
+    const images = getObject(item, 'images');
+    const jpg = getObject(images, 'jpg');
+    const webp = getObject(images, 'webp');
+    return getString(jpg, 'large_image_url')
+        || getString(webp, 'large_image_url')
+        || getString(jpg, 'image_url')
+        || getString(webp, 'image_url');
+}
+
+function getShikimoriImage(item: Record<string, unknown> | null): string {
+    const poster = getObject(item, 'poster');
+    const path = getString(poster, 'originalUrl') || getString(poster, 'mainUrl');
+    if (!path) return '';
+    if (path.startsWith('//')) return `https:${path}`;
+    if (/^https?:\/\//i.test(path)) return path;
+    return `https://shikimori.net${path.startsWith('/') ? '' : '/'}${path}`;
+}
+
+function getFallbackSearchScore(title: string, alternateTitle: string, query: string): number {
+    const normalizedQuery = query.trim().toLowerCase();
+    const candidates = [title, alternateTitle].map((value) => value.trim().toLowerCase()).filter(Boolean);
+    let score = 0;
+    for (const candidate of candidates) {
+        if (candidate === normalizedQuery) score = Math.max(score, 100);
+        else if (candidate.startsWith(normalizedQuery)) score = Math.max(score, 60);
+        else if (candidate.includes(normalizedQuery)) score = Math.max(score, 30);
+    }
+    return score - (title.length / 1_000);
+}
+
 function getJikanYear(item: Record<string, unknown> | null): string {
-    const published = getObject(item, 'published');
-    const from = getString(published, 'from');
-    if (from) return from.slice(0, 4);
     const year = getString(item, 'year');
     if (year) return year;
+    const published = getObject(item, 'published');
+    const publishedFrom = getString(published, 'from');
+    if (publishedFrom) return publishedFrom.slice(0, 4);
     const aired = getObject(item, 'aired');
-    return getString(aired, 'from').slice(0, 4);
+    const from = getString(aired, 'from');
+    return from ? from.slice(0, 4) : '';
+}
+
+function mapJikanKind(format: string): AnimeFormat {
+    const value = format.toLowerCase();
+    if (value === 'movie') return 'movie';
+    if (value === 'ova') return 'ova';
+    if (value === 'ona') return 'ona';
+    if (value === 'special' || value === 'music') return 'special';
+    return 'tv';
+}
+
+function getNumber(source: Record<string, unknown> | null, key: string): number | null {
+    if (!source) return null;
+    const value = source[key];
+    const parsed = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
+    return Number.isFinite(parsed) ? parsed : null;
 }

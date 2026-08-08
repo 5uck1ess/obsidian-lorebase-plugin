@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { GameService } from '../src/services/GameService';
+import { extractMarkdownSection, GameService, upsertMarkdownSection } from '../src/services/GameService';
 import type { GameItem } from '../src/types';
+import { DEFAULT_SETTINGS } from '../src/constants';
 import { createMockApp, createBaseFilter, createMetadataService, createMockFile } from './helpers/testHelpers';
 import { getSortOptionsForMediaType, getStatusOptionsForMediaType } from '../src/views/library/viewOptions';
-import { shouldGroupBySeries } from '../src/views/library/rendering';
 
 describe('GameService', () => {
     it('parses frontmatter from cache into game model', () => {
@@ -21,7 +21,27 @@ describe('GameService', () => {
                     Sex18: 'true',
                     gameSeries: 'Mass Effect',
                     dateCompleted: '2024-05-10',
+                    started: '2024-04-01',
+                    finished: '2024-05-10',
+                    dlc: [
+                        {
+                            id: '123',
+                            provider: 'steam',
+                            title: 'Citadel',
+                            image: 'https://cdn.example/dlc.jpg',
+                            url: 'https://store.steampowered.com/app/123/',
+                            userRating: 4,
+                        },
+                    ],
+                    related_media: [
+                        {
+                            type: 'manga',
+                            path: 'Manga/Mass Effect - Redemption.md',
+                            title: 'Mass Effect: Redemption',
+                        },
+                    ],
                     genres: ['RPG'],
+                    platforms: ['Windows PC', 'PlayStation 5'],
                     tags: ['Sci-Fi'],
                 },
                 tags: [{ tag: '#Space' }],
@@ -40,7 +60,106 @@ describe('GameService', () => {
         expect(parsed?.tags).toContain('sci-fi');
         expect(parsed?.tags).toContain('space');
         expect(parsed?.genres).toContain('rpg');
+        expect(parsed?.platforms).toEqual(['Windows PC', 'PlayStation 5']);
         expect(parsed?.dateCompleted).toBeTypeOf('number');
+        expect(parsed?.started).toBe('2024-04-01');
+        expect(parsed?.finished).toBe('2024-05-10');
+        expect(parsed?.dlc).toEqual([
+            {
+                id: '123',
+                provider: 'steam',
+                title: 'Citadel',
+                imageUrl: 'https://cdn.example/dlc.jpg',
+                url: 'https://store.steampowered.com/app/123/',
+                userRating: 4,
+                owned: undefined,
+            },
+        ]);
+        expect(parsed?.relatedMedia).toEqual([
+            {
+                type: 'manga',
+                path: 'Manga/Mass Effect - Redemption.md',
+                title: 'Mass Effect: Redemption',
+            },
+        ]);
+    });
+
+    it('serializes related media when a game is edited', async () => {
+        const file = createMockFile('Games/Mass Effect.md', 'Mass Effect');
+        const frontmatter: Record<string, unknown> = { type: 'game', name: 'Mass Effect' };
+        const app = createMockApp({
+            [file.path]: { frontmatter },
+        });
+        app.vault.getAbstractFileByPath = () => file;
+        app.fileManager.processFrontMatter = async (_file, handler) => {
+            handler(frontmatter);
+        };
+
+        const service = new GameService(app, createMetadataService(app));
+        const game = service.parseGameFromCache(file);
+        expect(game).not.toBeNull();
+
+        await service.updateGame(game!, {
+            relatedMedia: [
+                {
+                    type: 'book',
+                    path: 'Books/Mass Effect - Revelation.md',
+                    title: 'Mass Effect: Revelation',
+                },
+            ],
+        });
+
+        expect(frontmatter.related_media).toEqual([
+            {
+                type: 'book',
+                path: 'Books/Mass Effect - Revelation.md',
+                title: 'Mass Effect: Revelation',
+            },
+        ]);
+    });
+
+    it('extracts and updates the My Notes markdown section', () => {
+        const content = [
+            '---',
+            'name: "Game"',
+            '---',
+            '',
+            '# Game',
+            '',
+            '## My Notes',
+            '',
+            'Line one.',
+            'Line two.',
+            '',
+            '## Other',
+            '',
+            'Keep me.',
+        ].join('\n');
+
+        expect(extractMarkdownSection(content)).toBe('Line one.\nLine two.');
+
+        const updated = upsertMarkdownSection(content, 'My Notes', 'New note');
+        expect(updated).toContain('## My Notes\n\nNew note');
+        expect(updated).toContain('## Other\n\nKeep me.');
+    });
+
+    it('keeps local poster paths available when direct resource resolution is not ready', () => {
+        const file = createMockFile('Games/Cyberpunk 2077.md', 'Cyberpunk 2077');
+        const posterPath = 'files/lorebase/images/games/Cyberpunk 2077 - Poster.jpg';
+        const app = createMockApp({
+            [file.path]: {
+                frontmatter: {
+                    type: 'game',
+                    name: 'Cyberpunk 2077',
+                    poster: posterPath,
+                },
+            },
+        });
+
+        const service = new GameService(app, createMetadataService(app));
+        const parsed = service.parseGameFromCache(file);
+
+        expect(parsed?.imageUrl).toBe(posterPath);
     });
 
     it('filters and sorts games by rules', () => {
@@ -110,19 +229,20 @@ describe('GameService', () => {
         ];
 
         const base = service.filterAndSort(games, createBaseFilter(), 'name', 'asc', false);
-        expect(base.map((item) => item.displayName)).toEqual(['Bravo']);
+        expect(base.map((item) => item.displayName)).toEqual(['Alpha', 'Bravo']);
+
+        const showEverything = service.filterAndSort(games, createBaseFilter(), 'name', 'asc', true);
+        expect(showEverything.map((item) => item.displayName)).toEqual(['Alpha', 'Bravo', 'Charlie']);
+
+        const defaultViewFilter = createBaseFilter();
+        defaultViewFilter.rules = DEFAULT_SETTINGS.games.viewState.rules;
+        const defaultView = service.filterAndSort(games, defaultViewFilter, 'name', 'asc', true);
+        expect(defaultView.map((item) => item.displayName)).toEqual(['Bravo']);
 
         const searchFilter = createBaseFilter();
         searchFilter.searchTerm = 'alpha';
         const withSearch = service.filterAndSort(games, searchFilter, 'name', 'asc', false);
         expect(withSearch.map((item) => item.displayName)).toEqual(['Alpha']);
-    });
-
-    it('groups only in explicit series sort mode', () => {
-        const filter = createBaseFilter();
-
-        expect(shouldGroupBySeries('game', 'name', 'grid', filter, 10)).toBe(false);
-        expect(shouldGroupBySeries('game', 'series', 'grid', filter, 10)).toBe(true);
     });
 
     it('shows series as the primary game sort option', () => {
@@ -257,7 +377,7 @@ describe('GameService', () => {
                 status: 'not_started',
                 gameSeries: '',
                 dateCompleted: null,
-                tags: ['next in queue'],
+                tags: ['next-in-queue'],
                 genres: [],
             },
             {
@@ -282,11 +402,29 @@ describe('GameService', () => {
             },
         ];
         const filter = createBaseFilter();
-        filter.tags = ['next in queue'];
+        filter.tags = ['next-in-queue'];
 
         const result = service.filterAndSort(games, filter, 'name', 'asc', true);
 
         expect(result.map((item) => item.displayName)).toEqual(['Tagged']);
+    });
+
+    it('normalizes legacy plan tags with spaces from frontmatter', () => {
+        const file = createMockFile('Games/Plans.md', 'Plans');
+        const app = createMockApp({
+            [file.path]: {
+                frontmatter: {
+                    name: 'Plans',
+                    tags: ['play soon', 'wait early access'],
+                },
+            },
+        });
+        const service = new GameService(app, createMetadataService(app));
+
+        const parsed = service.parseGameFromCache(file);
+
+        expect(parsed?.tags).toContain('play-soon');
+        expect(parsed?.tags).toContain('wait-early-access');
     });
 
     it('does not treat string false flags as true', () => {
@@ -328,5 +466,54 @@ describe('GameService', () => {
         expect(parsed?.releaseDate).toBe('2009-11-17');
         expect(parsed?.developer).toBe('Ubisoft Montreal');
         expect(parsed?.publisher).toBe('Ubisoft Entertainment');
+    });
+
+    it('stores comma-separated developers and publishers as YAML lists', async () => {
+        const file = createMockFile('Games/Black Flag.md', 'Black Flag');
+        const frontmatter: Record<string, unknown> = {
+            type: 'game',
+            name: 'Black Flag',
+            developer: 'Ubisoft Montreal',
+            publisher: 'Ubisoft',
+        };
+        const app = createMockApp({ [file.path]: { frontmatter } });
+        app.vault.getAbstractFileByPath = () => file;
+        app.fileManager.processFrontMatter = async (_file, handler) => handler(frontmatter);
+
+        const service = new GameService(app, createMetadataService(app));
+        const game = service.parseGameFromCache(file);
+        expect(game).not.toBeNull();
+
+        await service.updateGame(game!, {
+            developer: 'Ubisoft Montreal, Ubisoft',
+            publisher: 'Ubisoft, Ubisoft Entertainment',
+        });
+
+        expect(frontmatter.developers).toEqual(['Ubisoft Montreal', 'Ubisoft']);
+        expect(frontmatter.publishers).toEqual(['Ubisoft', 'Ubisoft Entertainment']);
+        expect(frontmatter.developer).toBeUndefined();
+        expect(frontmatter.publisher).toBeUndefined();
+    });
+
+    it('stores edited platforms as a YAML list', async () => {
+        const file = createMockFile('Games/Platforms.md', 'Platforms');
+        const frontmatter: Record<string, unknown> = {
+            type: 'game',
+            name: 'Platforms',
+            platform: 'Windows PC',
+        };
+        const app = createMockApp({ [file.path]: { frontmatter } });
+        app.vault.getAbstractFileByPath = () => file;
+        app.fileManager.processFrontMatter = async (_file, handler) => handler(frontmatter);
+
+        const service = new GameService(app, createMetadataService(app));
+        const game = service.parseGameFromCache(file);
+        expect(game?.platforms).toEqual(['Windows PC']);
+
+        await service.updateGame(game!, {
+            platforms: ['Windows PC', 'Xbox Series X|S'],
+        });
+
+        expect(frontmatter.platform).toEqual(['Windows PC', 'Xbox Series X|S']);
     });
 });

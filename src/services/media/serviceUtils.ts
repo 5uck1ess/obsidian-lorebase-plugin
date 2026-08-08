@@ -1,9 +1,43 @@
 import { TFile, TFolder } from 'obsidian';
+import { normalizeObsidianTag } from '../../settings/settingsNormalization';
 
 export function getAllMarkdownFiles(folder: TFolder): TFile[] {
     const files: TFile[] = [];
     collectMarkdownFiles(folder, files);
     return files;
+}
+
+export async function mapInFrameBatches<TInput, TOutput>(
+    items: readonly TInput[],
+    mapper: (item: TInput) => TOutput | null,
+    batchSize = 12
+): Promise<TOutput[]> {
+    const output: TOutput[] = [];
+    const safeBatchSize = Math.max(1, Math.trunc(batchSize));
+
+    for (let index = 0; index < items.length; index += safeBatchSize) {
+        const end = Math.min(index + safeBatchSize, items.length);
+        for (let itemIndex = index; itemIndex < end; itemIndex++) {
+            const mapped = mapper(items[itemIndex]);
+            if (mapped !== null) output.push(mapped);
+        }
+
+        if (end < items.length) {
+            await yieldToNextFrame();
+        }
+    }
+
+    return output;
+}
+
+function yieldToNextFrame(): Promise<void> {
+    return new Promise((resolve) => {
+        if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+            window.requestAnimationFrame(() => resolve());
+            return;
+        }
+        setTimeout(resolve, 0);
+    });
 }
 
 function collectMarkdownFiles(folder: TFolder, files: TFile[]): void {
@@ -27,7 +61,7 @@ export function isTruthy(value: unknown): boolean {
 }
 
 function normalizeTag(tag: string): string {
-    return tag.trim().replace(/^#/, '').toLowerCase();
+    return normalizeObsidianTag(tag);
 }
 
 function addTagsFromValue(tagSet: Set<string>, value: unknown): void {

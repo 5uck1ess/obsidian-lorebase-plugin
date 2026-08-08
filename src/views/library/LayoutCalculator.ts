@@ -14,6 +14,9 @@ export type EffectiveLayout = {
 const GRID_GAP_PX = 16;
 const GRID_PADDING_PX = 16;
 const PROGRESS_FOOTER_HEIGHT_PX = 48;
+const PRESET_HORIZONTAL_MIN_WIDTH = 340;
+const MOBILE_BREAKPOINT_PX = 520;
+const MOBILE_VERTICAL_MIN_WIDTH_PX = 136;
 const PRESET_VERTICAL_MIN_WIDTH: Record<CardSize, number> = {
     small: 180,
     medium: 220,
@@ -30,9 +33,13 @@ export class LayoutCalculator {
         const dimensions = settings.customCardSize
             ? this.resolveCustomCardDimensions(settings, cardSize)
             : null;
-        const minCardWidth = orientation === 'vertical'
+        let minCardWidth = orientation === 'vertical'
             ? (dimensions?.verticalMinWidth ?? PRESET_VERTICAL_MIN_WIDTH[cardSize])
-            : (dimensions?.horizontalMinWidth ?? 240);
+            : (dimensions?.horizontalMinWidth ?? PRESET_HORIZONTAL_MIN_WIDTH);
+        const availableWidth = this.getAvailableWidth();
+        if (orientation === 'vertical' && availableWidth > 0 && availableWidth <= MOBILE_BREAKPOINT_PX) {
+            minCardWidth = Math.min(minCardWidth, MOBILE_VERTICAL_MIN_WIDTH_PX);
+        }
 
         return {
             cardSize,
@@ -45,9 +52,6 @@ export class LayoutCalculator {
     }
 
     getRenderedColumns(layout: EffectiveLayout): number {
-        if (layout.orientation === 'horizontal') {
-            return Math.max(1, layout.columns);
-        }
         return this.resolveAdaptiveColumns(layout.columns, layout.minCardWidth);
     }
 
@@ -80,7 +84,12 @@ export class LayoutCalculator {
             ? imageRatio
             : 2 / 3;
 
-        const imageHeight = Math.max(staticHeight, Math.ceil(cardWidth / ratio));
+        // Phone grids use the poster ratio as the source of truth. Keeping the
+        // desktop preset as a minimum here made every phone card ~400px tall
+        // and forced the library into a single oversized column.
+        const imageHeight = gridWidth <= MOBILE_BREAKPOINT_PX
+            ? Math.ceil(cardWidth / ratio)
+            : Math.max(staticHeight, Math.ceil(cardWidth / ratio));
         return layout.cardStyle === 'progress'
             ? imageHeight + PROGRESS_FOOTER_HEIGHT_PX
             : imageHeight;

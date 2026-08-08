@@ -3,21 +3,32 @@ import { setIcon } from 'obsidian';
 export type LorebaseDropdownOption<T extends string> = {
     value: T;
     label: string;
+    group?: string;
+    advanced?: boolean;
 };
 
 export type LorebaseDropdownHandle<T extends string> = {
     setValue: (value: T) => void;
 };
 
+export type LorebaseDropdownConfig = {
+    showMoreLabel?: string;
+    showLessLabel?: string;
+    floating?: boolean;
+};
+
 export function createLorebaseDropdown<T extends string>(
     container: HTMLElement,
     options: LorebaseDropdownOption<T>[],
     value: T,
-    onChange: (value: T) => void | Promise<void>
+    onChange: (value: T) => void | Promise<void>,
+    config: LorebaseDropdownConfig = {}
 ): LorebaseDropdownHandle<T> {
     container.empty();
     container.addClass('lorebase-settings-dropdown');
+    container.toggleClass('is-floating', Boolean(config.floating));
     let currentValue = value;
+    let showAdvanced = options.some((option) => option.advanced && option.value === currentValue);
 
     const button = container.createEl('button', {
         cls: 'lorebase-settings-dropdown-btn',
@@ -35,6 +46,53 @@ export function createLorebaseDropdown<T extends string>(
         cls: 'lorebase-settings-dropdown-panel',
         attr: { role: 'listbox' },
     });
+    panel.toggleClass('lorebase-floating-dropdown-panel', Boolean(config.floating));
+    panel.addEventListener('click', (event) => {
+        if (config.floating) event.stopPropagation();
+    });
+
+    const positionFloatingPanel = (): void => {
+        if (!config.floating || !panel.hasClass('is-open')) return;
+        const ownerWindow = container.ownerDocument.defaultView ?? window;
+        const viewportWidth = ownerWindow.document.documentElement.clientWidth;
+        const viewportHeight = ownerWindow.document.documentElement.clientHeight;
+        const buttonRect = button.getBoundingClientRect();
+        const gap = 4;
+        const edge = 8;
+        if (buttonRect.bottom <= 0 || buttonRect.top >= viewportHeight) {
+            close();
+            return;
+        }
+        const width = Math.min(
+            Math.max(buttonRect.width, 160),
+            300,
+            Math.max(160, viewportWidth - edge * 2)
+        );
+
+        panel.style.position = 'fixed';
+        panel.style.width = `${width}px`;
+        panel.style.minWidth = `${width}px`;
+        panel.style.maxWidth = `${width}px`;
+        panel.style.left = `${Math.min(
+            Math.max(edge, buttonRect.left),
+            Math.max(edge, viewportWidth - width - edge)
+        )}px`;
+        panel.style.top = '0px';
+        panel.style.visibility = 'hidden';
+
+        const spaceBelow = Math.max(0, viewportHeight - buttonRect.bottom - gap - edge);
+        const spaceAbove = Math.max(0, buttonRect.top - gap - edge);
+        const openAbove = spaceBelow < 180 && spaceAbove > spaceBelow;
+        const availableHeight = Math.max(96, openAbove ? spaceAbove : spaceBelow);
+        panel.style.maxHeight = `${Math.min(320, availableHeight)}px`;
+
+        const panelHeight = panel.getBoundingClientRect().height;
+        const top = openAbove
+            ? Math.max(edge, buttonRect.top - gap - panelHeight)
+            : Math.min(buttonRect.bottom + gap, viewportHeight - edge - panelHeight);
+        panel.style.top = `${Math.max(edge, top)}px`;
+        panel.style.visibility = '';
+    };
 
     const close = (): void => {
         panel.removeClass('is-open');
@@ -42,7 +100,11 @@ export function createLorebaseDropdown<T extends string>(
         container.removeClass('is-open');
         updateAncestorOpenState(false);
         button.setAttribute('aria-expanded', 'false');
+        if (config.floating && panel.parentElement !== container) {
+            container.appendChild(panel);
+        }
     };
+    panel.addEventListener('lorebase-dropdown-close', () => close());
     const updateAncestorOpenState = (isOpen: boolean): void => {
         container
             .closest('.lorebase-editmode-anime-parts, .lorebase-editmode-anime-part-editor, .lorebase-anime-parts-row')
@@ -55,7 +117,16 @@ export function createLorebaseDropdown<T extends string>(
 
     const renderOptions = (): void => {
         panel.empty();
-        for (const option of options) {
+        let currentGroup: string | undefined;
+        const visibleOptions = options.filter((option) => !option.advanced || showAdvanced);
+        for (const option of visibleOptions) {
+            if (option.group && option.group !== currentGroup) {
+                panel.createDiv({
+                    cls: 'lorebase-settings-dropdown-section-label',
+                    text: option.group,
+                });
+            }
+            currentGroup = option.group;
             const item = panel.createDiv({
                 cls: 'lorebase-settings-dropdown-option',
                 attr: {
@@ -92,6 +163,29 @@ export function createLorebaseDropdown<T extends string>(
                 void selectOption();
             });
         }
+
+        if (options.some((option) => option.advanced)) {
+            const more = panel.createEl('button', {
+                cls: 'lorebase-settings-dropdown-more',
+                text: showAdvanced
+                    ? (config.showLessLabel ?? 'Show less')
+                    : (config.showMoreLabel ?? 'Show more'),
+                attr: {
+                    type: 'button',
+                    'aria-expanded': String(showAdvanced),
+                },
+            });
+            const icon = more.createSpan({ cls: 'lorebase-settings-dropdown-more-icon' });
+            setIcon(icon, showAdvanced ? 'chevron-up' : 'chevron-down');
+            more.prepend(icon);
+            more.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                showAdvanced = !showAdvanced;
+                renderOptions();
+            });
+        }
+        positionFloatingPanel();
     };
 
     button.addEventListener('click', (event) => {
@@ -102,7 +196,7 @@ export function createLorebaseDropdown<T extends string>(
             if (!container.contains(node)) node.removeClass('is-dropdown-open');
         });
         activeDocument.querySelectorAll('.lorebase-settings-dropdown-panel.is-open').forEach((node) => {
-            if (node !== panel) node.removeClass('is-open');
+            if (node !== panel) node.dispatchEvent(new Event('lorebase-dropdown-close'));
         });
         activeDocument.querySelectorAll('.lorebase-settings-dropdown-btn.is-open').forEach((node) => {
             if (node !== button) {
@@ -113,32 +207,54 @@ export function createLorebaseDropdown<T extends string>(
         activeDocument.querySelectorAll('.lorebase-settings-dropdown.is-open').forEach((node) => {
             if (node !== container) node.removeClass('is-open');
         });
+        if (!isOpen && config.floating) {
+            container.ownerDocument.body.appendChild(panel);
+        }
         panel.toggleClass('is-open', !isOpen);
         button.toggleClass('is-open', !isOpen);
         container.toggleClass('is-open', !isOpen);
         updateAncestorOpenState(!isOpen);
         button.setAttribute('aria-expanded', String(!isOpen));
+        if (!isOpen) positionFloatingPanel();
     });
 
+    const removeGlobalListeners = (): void => {
+        activeDocument.removeEventListener('click', onDocumentClick);
+        activeDocument.removeEventListener('keydown', onKeydown);
+        activeDocument.removeEventListener('scroll', onDocumentScroll, true);
+    };
     const onDocumentClick = (event: MouseEvent): void => {
         if (!container.isConnected) {
-            activeDocument.removeEventListener('click', onDocumentClick);
-            activeDocument.removeEventListener('keydown', onKeydown);
+            removeGlobalListeners();
             return;
         }
-        if (!container.contains(event.target as Node)) close();
+        const target = event.target;
+        const clickedInside = event.composedPath().includes(container)
+            || (target instanceof Node && container.contains(target));
+        if (!clickedInside) close();
     };
     const onKeydown = (event: KeyboardEvent): void => {
         if (!container.isConnected) {
-            activeDocument.removeEventListener('click', onDocumentClick);
-            activeDocument.removeEventListener('keydown', onKeydown);
+            removeGlobalListeners();
             return;
         }
         if (event.key === 'Escape') close();
     };
+    const onDocumentScroll = (event: Event): void => {
+        if (!container.isConnected) {
+            removeGlobalListeners();
+            return;
+        }
+        if (!panel.hasClass('is-open')) return;
+
+        const path = event.composedPath();
+        if (path.includes(panel)) return;
+        positionFloatingPanel();
+    };
 
     activeDocument.addEventListener('click', onDocumentClick);
     activeDocument.addEventListener('keydown', onKeydown);
+    activeDocument.addEventListener('scroll', onDocumentScroll, true);
 
     renderLabel();
     renderOptions();

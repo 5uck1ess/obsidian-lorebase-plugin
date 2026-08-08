@@ -2,13 +2,22 @@ import { Notice, Setting, setIcon } from 'obsidian';
 import { t, type TranslationKey } from '../../localization';
 import type { IntegrationTemplateSettings } from '../../types';
 import { IntegrationService } from '../../services/IntegrationService';
+import {
+    buildIntegrationDiagnosticReport,
+    clearIntegrationDiagnostics,
+    getIntegrationDiagnostics,
+    type IntegrationDiagnosticEvent,
+    type IntegrationDiagnosticOutcome,
+} from '../../services/integrations/diagnostics';
+import { getActiveIntegrationCooldowns } from '../../services/integrations/shared';
+import { buildSimpleTemplate, getEffectiveSimpleTemplateFields } from '../../services/integrations/templateUtils';
 import { renderSteamSyncSettings } from '../SteamSyncSettings';
 import { ANIME_TEMPLATE_FIELDS, BOOK_TEMPLATE_FIELDS, GAME_TEMPLATE_FIELDS, GAME_TEMPLATE_FIELDS_HLTB, ICON_INTEGRATIONS, MANGA_TEMPLATE_FIELDS, MOVIE_TEMPLATE_FIELDS, SERIES_TEMPLATE_FIELDS } from './constants';
 import { addLorebaseDropdown } from './customDropdown';
 import { createMediaTabs } from './mediaTabs';
 import type { MediaTypeKey, SettingsSectionContext, TemplateFieldDef } from './types';
 
-type ProviderSettingsId = 'rawg' | 'steam' | 'igdb' | 'anilist' | 'shikimori' | 'tmdb' | 'tvmaze' | 'omdb' | 'hardcover' | 'googlebooks' | 'jikan' | 'mangadex';
+type ProviderSettingsId = 'rawg' | 'steam' | 'igdb' | 'anilist' | 'jikan' | 'shikimori' | 'tmdb' | 'tvmaze' | 'omdb' | 'hardcover' | 'googlebooks' | 'mangaupdates' | 'mangadex';
 
 interface ProviderSettingsDef {
     id: ProviderSettingsId;
@@ -65,7 +74,8 @@ function renderSimpleTemplateFieldEditor(
     context: SettingsSectionContext,
     container: HTMLElement,
     media: IntegrationTemplateSettings,
-    fields: TemplateFieldDef[]
+    fields: TemplateFieldDef[],
+    kind: MediaTypeKey
 ): void {
     container.createDiv({
         text: t('settingsIntegrationsTemplateFields'),
@@ -78,8 +88,15 @@ function renderSimpleTemplateFieldEditor(
     const defaultSelected = media.templateFields ?? fields.map((field) => field.key);
     const selected = new Set(defaultSelected.filter((key) => orderedKeys.includes(key)));
 
+    const getSelectedFields = (): string[] => getEffectiveSimpleTemplateFields(
+        kind,
+        orderedKeys.filter((key) => selected.has(key)),
+        { howLongToBeatEnabled: Boolean(media.howLongToBeatEnabled) }
+    );
+
     const saveTemplateFields = async (): Promise<void> => {
-        media.templateFields = orderedKeys.filter((key) => selected.has(key));
+        media.templateFields = getSelectedFields();
+        media.template = buildSimpleTemplate(kind, media.templateFields);
         await context.plugin.saveSettings();
     };
 
@@ -106,7 +123,8 @@ function renderSimpleTemplateFieldEditor(
             const info = row.querySelector('.setting-item-info');
             if (info instanceof HTMLElement) {
                 info.addClass('lorebase-template-field-info');
-                info.createSpan({ cls: 'lorebase-template-field-handle', text: '⋮⋮' });
+                const handleEl = info.createSpan({ cls: 'lorebase-template-field-handle' });
+                setIcon(handleEl, 'grip-vertical');
             }
 
             setting.addToggle(toggle => {
@@ -175,6 +193,18 @@ function enableHowLongToBeatTemplateFields(media: IntegrationTemplateSettings): 
     media.templateFields = Array.from(new Set([...current, ...hltbFields]));
 }
 
+function syncSimpleTemplate(
+    media: IntegrationTemplateSettings,
+    kind: MediaTypeKey,
+    fields: TemplateFieldDef[]
+): void {
+    const selected = media.templateFields ?? fields.map((field) => field.key);
+    media.templateFields = getEffectiveSimpleTemplateFields(kind, selected, {
+        howLongToBeatEnabled: Boolean(media.howLongToBeatEnabled)
+    });
+    media.template = buildSimpleTemplate(kind, media.templateFields);
+}
+
 export function renderIntegrationsSection(context: SettingsSectionContext, container: HTMLElement): void {
     const integrations = context.plugin.settings.integrations;
     if (!integrations) return;
@@ -197,8 +227,25 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
         });
 
     if (!integrations.enabled) {
+        renderIntegrationDiagnostics(context, container);
         return;
     }
+
+    new Setting(container)
+        .setName(t('settingsIntegrationsRequestCooldown'))
+        .setDesc(t('settingsIntegrationsRequestCooldownDesc'))
+        .addSlider(slider => {
+            slider
+                .setLimits(0, 10, 0.5)
+                .setDynamicTooltip()
+                .setValue(Number.isFinite(integrations.requestCooldownSeconds)
+                    ? Math.min(10, Math.max(0, integrations.requestCooldownSeconds))
+                    : 1)
+                .onChange(async (value) => {
+                    integrations.requestCooldownSeconds = value;
+                    await context.plugin.saveSettings();
+                });
+        });
 
     const providersGroup = context.createCollapsibleGroup(
         container,
@@ -214,6 +261,7 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
     ];
     const animeProviders: ProviderSettingsDef[] = [
         { id: 'anilist', label: 'AniList', detailLabel: t('settingsIntegrationsProviderAnilist'), needsKey: false },
+        { id: 'jikan', label: 'Jikan', detailLabel: t('settingsIntegrationsProviderJikan'), needsKey: false },
         { id: 'shikimori', label: 'Shikimori', detailLabel: t('settingsIntegrationsProviderShikimori'), needsKey: false }
     ];
     const bookProviders: ProviderSettingsDef[] = [
@@ -223,7 +271,7 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
     const mangaProviders: ProviderSettingsDef[] = [
         { id: 'anilist', label: 'AniList', detailLabel: t('settingsIntegrationsProviderAnilist'), needsKey: false },
         { id: 'shikimori', label: 'Shikimori', detailLabel: t('settingsIntegrationsProviderShikimori'), needsKey: false },
-        { id: 'jikan', label: 'Jikan', detailLabel: t('settingsIntegrationsProviderJikan'), needsKey: false },
+        { id: 'mangaupdates', label: 'MangaUpdates', detailLabel: t('settingsIntegrationsProviderMangaupdates'), needsKey: false },
         { id: 'mangadex', label: 'MangaDex', detailLabel: t('settingsIntegrationsProviderMangadex'), needsKey: false },
     ];
     const videoProviders: ProviderSettingsDef[] = [
@@ -495,7 +543,6 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
     const renderTemplateSettings = (
         key: MediaTypeKey,
         titleKey: TranslationKey,
-        descKey: TranslationKey,
         fields: TemplateFieldDef[]
     ): void => {
         const media = integrations.media[key];
@@ -508,7 +555,6 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
 
         new Setting(panel)
             .setName(t(titleKey))
-            .setDesc(t(descKey))
             .addToggle(toggle => {
                 toggle
                     .setValue(media.templateEnabled)
@@ -521,7 +567,7 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
 
         if (!media.templateEnabled) return;
 
-        const mode = media.templateMode ?? 'advanced';
+        const mode = media.templateMode ?? 'simple';
         const templateModeSetting = new Setting(panel)
             .setName(t('settingsIntegrationsTemplateMode'))
             .setDesc(t('settingsIntegrationsTemplateModeDesc'));
@@ -534,6 +580,12 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
             mode,
             async (value) => {
                 media.templateMode = value;
+                if (value === 'simple') {
+                    const visibleFields = key === 'games'
+                        ? getGameTemplateFields(Boolean(media.howLongToBeatEnabled))
+                        : fields;
+                    syncSimpleTemplate(media, key, visibleFields);
+                }
                 await context.plugin.saveSettings();
                 context.display();
             }
@@ -551,6 +603,7 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
                             if (value) {
                                 enableHowLongToBeatTemplateFields(media);
                             }
+                            syncSimpleTemplate(media, key, getGameTemplateFields(value));
                             await context.plugin.saveSettings();
                             context.display();
                         });
@@ -629,17 +682,16 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
             syncSteamGridDbPanel();
         }
 
-        if ((media.templateMode ?? 'advanced') === 'simple') {
+        if ((media.templateMode ?? 'simple') === 'simple') {
             const visibleFields = key === 'games'
                 ? getGameTemplateFields(Boolean(media.howLongToBeatEnabled))
                 : fields;
-            renderSimpleTemplateFieldEditor(context, panel, media, visibleFields);
+            renderSimpleTemplateFieldEditor(context, panel, media, visibleFields, key);
             return;
         }
 
         new Setting(panel)
             .setName(t('settingsIntegrationsTemplateContent'))
-            .setDesc(t('settingsIntegrationsTemplateDesc'))
             .addTextArea(text => {
                 text
                     .setValue(media.template)
@@ -651,12 +703,12 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
             });
     };
 
-    renderTemplateSettings('games', 'settingsIntegrationsGamesTemplate', 'settingsIntegrationsGamesTemplateDesc', getGameTemplateFields(Boolean(integrations.media.games.howLongToBeatEnabled)));
-    renderTemplateSettings('anime', 'settingsIntegrationsAnimeTemplate', 'settingsIntegrationsAnimeTemplateDesc', ANIME_TEMPLATE_FIELDS);
-    renderTemplateSettings('movies', 'settingsIntegrationsMoviesTemplate', 'settingsIntegrationsMoviesTemplateDesc', MOVIE_TEMPLATE_FIELDS);
-    renderTemplateSettings('series', 'settingsIntegrationsSeriesTemplate', 'settingsIntegrationsSeriesTemplateDesc', SERIES_TEMPLATE_FIELDS);
-    renderTemplateSettings('books', 'settingsIntegrationsBooksTemplate', 'settingsIntegrationsBooksTemplateDesc', BOOK_TEMPLATE_FIELDS);
-    renderTemplateSettings('manga', 'settingsIntegrationsMangaTemplate', 'settingsIntegrationsMangaTemplateDesc', MANGA_TEMPLATE_FIELDS);
+    renderTemplateSettings('games', 'settingsIntegrationsGamesTemplate', getGameTemplateFields(Boolean(integrations.media.games.howLongToBeatEnabled)));
+    renderTemplateSettings('anime', 'settingsIntegrationsAnimeTemplate', ANIME_TEMPLATE_FIELDS);
+    renderTemplateSettings('movies', 'settingsIntegrationsMoviesTemplate', MOVIE_TEMPLATE_FIELDS);
+    renderTemplateSettings('series', 'settingsIntegrationsSeriesTemplate', SERIES_TEMPLATE_FIELDS);
+    renderTemplateSettings('books', 'settingsIntegrationsBooksTemplate', BOOK_TEMPLATE_FIELDS);
+    renderTemplateSettings('manga', 'settingsIntegrationsMangaTemplate', MANGA_TEMPLATE_FIELDS);
     createMediaTabs(
         templateTabsHost,
         [
@@ -672,4 +724,234 @@ export function renderIntegrationsSection(context: SettingsSectionContext, conta
         selectTemplateMedia
     );
     selectTemplateMedia(context.getActiveMediaTab('integrationTemplates'));
+    renderIntegrationDiagnostics(context, container);
+}
+
+function renderIntegrationDiagnostics(context: SettingsSectionContext, container: HTMLElement): void {
+    const group = context.createCollapsibleGroup(
+        container,
+        t('settingsIntegrationsDiagnostics'),
+        t('settingsIntegrationsDiagnosticsDesc'),
+        false
+    );
+    group.root.addClass('lorebase-integration-diagnostics-group');
+
+    const privacyNotice = group.body.createDiv({ cls: 'lorebase-diagnostics-privacy' });
+    const privacyIcon = privacyNotice.createSpan({ cls: 'lorebase-diagnostics-privacy-icon' });
+    setIcon(privacyIcon, 'shield-check');
+    privacyNotice.createSpan({ text: t('settingsIntegrationsDiagnosticsSessionOnly') });
+
+    const toolbar = group.body.createDiv({ cls: 'lorebase-diagnostics-toolbar' });
+    const filters = toolbar.createDiv({ cls: 'lorebase-diagnostics-filters' });
+
+    const providerLabel = filters.createEl('label', { cls: 'lorebase-diagnostics-provider-filter' });
+    providerLabel.createSpan({ text: t('settingsIntegrationsDiagnosticsProviderFilter') });
+    const providerSelect = providerLabel.createEl('select', {
+        cls: 'dropdown lorebase-diagnostics-provider-select',
+        attr: { 'aria-label': t('settingsIntegrationsDiagnosticsProviderFilter') },
+    });
+
+    const errorsLabel = filters.createEl('label', { cls: 'lorebase-diagnostics-errors-filter' });
+    const errorsOnlyInput = errorsLabel.createEl('input', { attr: { type: 'checkbox' } });
+    errorsLabel.createSpan({ text: t('settingsIntegrationsDiagnosticsErrorsOnly') });
+
+    const actions = toolbar.createDiv({ cls: 'lorebase-diagnostics-actions' });
+    const createActionButton = (icon: string, label: string): HTMLButtonElement => {
+        const button = actions.createEl('button', {
+            cls: 'lorebase-diagnostics-action',
+            attr: { type: 'button', title: label, 'aria-label': label },
+        });
+        const iconEl = button.createSpan({ cls: 'lorebase-diagnostics-action-icon' });
+        setIcon(iconEl, icon);
+        button.createSpan({ text: label });
+        return button;
+    };
+    const refreshButton = createActionButton('refresh-cw', t('settingsIntegrationsDiagnosticsRefresh'));
+    const copyButton = createActionButton('copy', t('settingsIntegrationsDiagnosticsCopy'));
+    const clearButton = createActionButton('trash-2', t('settingsIntegrationsDiagnosticsClear'));
+
+    const cooldownSection = group.body.createDiv({ cls: 'lorebase-diagnostics-section' });
+    cooldownSection.createDiv({
+        cls: 'lorebase-diagnostics-section-title',
+        text: t('settingsIntegrationsDiagnosticsActiveCooldowns'),
+    });
+    const cooldownList = cooldownSection.createDiv({ cls: 'lorebase-diagnostics-cooldowns' });
+
+    const eventsSection = group.body.createDiv({ cls: 'lorebase-diagnostics-section' });
+    const eventsTitle = eventsSection.createDiv({ cls: 'lorebase-diagnostics-section-title' });
+    const eventsList = eventsSection.createDiv({ cls: 'lorebase-diagnostics-events' });
+
+    let selectedProvider = '';
+
+    const renderProviderOptions = (events: IntegrationDiagnosticEvent[]): void => {
+        const providers = Array.from(new Set(events.map((event) => event.provider))).sort((a, b) => a.localeCompare(b));
+        if (selectedProvider && !providers.includes(selectedProvider)) selectedProvider = '';
+        providerSelect.empty();
+        providerSelect.createEl('option', {
+            text: t('settingsIntegrationsDiagnosticsAllProviders'),
+            value: '',
+        });
+        for (const provider of providers) {
+            providerSelect.createEl('option', { text: provider, value: provider });
+        }
+        providerSelect.value = selectedProvider;
+    };
+
+    const getFilteredEvents = (): IntegrationDiagnosticEvent[] => getIntegrationDiagnostics()
+        .filter((event) => !selectedProvider || event.provider === selectedProvider)
+        .filter((event) => !errorsOnlyInput.checked || isDiagnosticFailure(event.outcome));
+
+    const renderDiagnostics = (): void => {
+        const events = getIntegrationDiagnostics();
+        const cooldowns = getActiveIntegrationCooldowns();
+        renderProviderOptions(events);
+
+        cooldownList.empty();
+        if (!cooldowns.length) {
+            cooldownList.createDiv({
+                cls: 'lorebase-diagnostics-empty',
+                text: t('settingsIntegrationsDiagnosticsNoCooldowns'),
+            });
+        } else {
+            for (const cooldown of cooldowns) {
+                const row = cooldownList.createDiv({ cls: 'lorebase-diagnostics-cooldown' });
+                const main = row.createDiv({ cls: 'lorebase-diagnostics-cooldown-main' });
+                main.createSpan({ cls: 'lorebase-diagnostics-provider', text: cooldown.provider });
+                main.createSpan({ cls: 'lorebase-diagnostics-status', text: `HTTP ${cooldown.status}` });
+                row.createDiv({
+                    cls: 'lorebase-diagnostics-cooldown-meta',
+                    text: `${cooldown.host} · ${formatDiagnosticRemaining(cooldown.remainingMs)}`,
+                });
+            }
+        }
+
+        const filtered = getFilteredEvents().reverse();
+
+        eventsTitle.setText(`${t('settingsIntegrationsDiagnosticsRecentRequests')} (${filtered.length}/${events.length})`);
+        eventsList.empty();
+        if (!filtered.length) {
+            eventsList.createDiv({
+                cls: 'lorebase-diagnostics-empty',
+                text: t('settingsIntegrationsDiagnosticsEmpty'),
+            });
+            return;
+        }
+
+        for (const event of filtered) {
+            renderDiagnosticEvent(eventsList, event);
+        }
+    };
+
+    const renderDiagnosticEvent = (target: HTMLElement, event: IntegrationDiagnosticEvent): void => {
+        const row = target.createDiv({ cls: `lorebase-diagnostics-event is-${event.outcome}` });
+        const header = row.createDiv({ cls: 'lorebase-diagnostics-event-header' });
+        header.createSpan({ cls: 'lorebase-diagnostics-provider', text: event.provider });
+        header.createSpan({
+            cls: `lorebase-diagnostics-outcome is-${event.outcome}`,
+            text: diagnosticOutcomeLabel(event.outcome),
+        });
+        header.createSpan({
+            cls: 'lorebase-diagnostics-time',
+            text: new Date(event.timestamp).toLocaleTimeString(),
+        });
+
+        if (event.kind === 'process') {
+            row.createDiv({
+                cls: 'lorebase-diagnostics-event-item',
+                text: event.itemLabel || event.itemId || event.operation,
+            });
+            row.createDiv({
+                cls: 'lorebase-diagnostics-event-meta',
+                text: `${event.operation}${event.itemId ? ` · App ${event.itemId}` : ''} · ${event.durationMs} ms`,
+            });
+            if (event.detail) {
+                row.createDiv({
+                    cls: 'lorebase-diagnostics-event-detail',
+                    text: event.detail,
+                });
+            }
+        } else {
+            const status = event.status > 0 ? `HTTP ${event.status}` : 'Network';
+            const source = event.source === 'circuit' ? ' · circuit' : '';
+            row.createDiv({
+                cls: 'lorebase-diagnostics-event-meta',
+                text: `${event.method} ${event.endpoint} · ${status} · ${event.durationMs} ms · #${event.attempt}${source}`,
+            });
+        }
+        row.setAttr('title', event.host);
+    };
+
+    providerSelect.addEventListener('change', () => {
+        selectedProvider = providerSelect.value;
+        renderDiagnostics();
+    });
+    errorsOnlyInput.addEventListener('change', renderDiagnostics);
+    refreshButton.addEventListener('click', renderDiagnostics);
+    copyButton.addEventListener('click', () => {
+        void (async (): Promise<void> => {
+            try {
+                const report = buildIntegrationDiagnosticReport(
+                    getActiveIntegrationCooldowns(),
+                    Date.now(),
+                    getFilteredEvents()
+                );
+                await copyDiagnosticText(report);
+                new Notice(t('settingsIntegrationsDiagnosticsCopied'));
+            } catch (error) {
+                const message = error instanceof Error ? `: ${error.message}` : '';
+                new Notice(`${t('noticeIntegrationsError')}${message}`);
+            }
+        })();
+    });
+    clearButton.addEventListener('click', () => {
+        clearIntegrationDiagnostics();
+        renderDiagnostics();
+        new Notice(t('settingsIntegrationsDiagnosticsCleared'));
+    });
+
+    renderDiagnostics();
+}
+
+function diagnosticOutcomeLabel(outcome: IntegrationDiagnosticOutcome): string {
+    const labels: Record<IntegrationDiagnosticOutcome, TranslationKey> = {
+        success: 'settingsIntegrationsDiagnosticsSuccess',
+        error: 'settingsIntegrationsDiagnosticsError',
+        blocked: 'settingsIntegrationsDiagnosticsBlocked',
+        retry: 'settingsIntegrationsDiagnosticsRetry',
+        created: 'settingsIntegrationsDiagnosticsCreated',
+        updated: 'settingsIntegrationsDiagnosticsUpdated',
+        skipped: 'settingsIntegrationsDiagnosticsSkipped',
+        cancelled: 'settingsIntegrationsDiagnosticsCancelled',
+    };
+    return t(labels[outcome]);
+}
+
+function isDiagnosticFailure(outcome: IntegrationDiagnosticOutcome): boolean {
+    return outcome === 'error' || outcome === 'blocked' || outcome === 'retry';
+}
+
+function formatDiagnosticRemaining(milliseconds: number): string {
+    const totalSeconds = Math.max(1, Math.ceil(milliseconds / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+async function copyDiagnosticText(text: string): Promise<void> {
+    if (navigator.clipboard?.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return;
+        } catch {
+            // Fall back to the document copy command below.
+        }
+    }
+    const input = document.body.createEl('textarea');
+    input.value = text;
+    input.setAttr('readonly', 'true');
+    input.setCssStyles({ position: 'fixed', opacity: '0', pointerEvents: 'none' });
+    input.select();
+    const copied = document.execCommand('copy');
+    input.remove();
+    if (!copied) throw new Error('Unable to copy integration diagnostics.');
 }

@@ -4,7 +4,7 @@
  */
 
 import { ItemView, WorkspaceLeaf, TFile, TAbstractFile } from 'obsidian';
-import { AnimeItem, GameItem, MangaItem, MediaItem, MediaStatus, MediaType, FilterState, LorebaseSettings, LorebasePluginInterface, MovieItem, ReadingItem, SeriesItem, ViewMode, SortField } from '../types';
+import { AnimeItem, FieldDefinition, GameItem, LibraryViewState, MangaItem, MediaItem, MediaStatus, MediaType, FilterState, LorebaseSettings, LorebasePluginInterface, MovieItem, ReadingItem, SeriesItem, ViewMode, SortField } from '../types';
 import { GameService } from '../services/GameService';
 import { AnimeService } from '../services/AnimeService';
 import { VideoService } from '../services/VideoService';
@@ -12,14 +12,15 @@ import { ReadingService } from '../services/ReadingService';
 import { MetadataService } from '../services/MetadataService';
 import { Toolbar, ToolbarCallbacks } from '../components/Toolbar';
 import { GameCard } from '../components/GameCard';
-import { VIEW_TYPE_LIBRARY, VIRTUALIZATION_BUFFER, LOREBASE_ICON_ID, SERIES_COLORS, STATUS_CONFIG, RATING_EMOJI, DEFAULT_GAME_TAG_PRESETS } from '../constants';
+import { VIEW_TYPE_LIBRARY, VIRTUALIZATION_BUFFER, LOREBASE_ICON_ID, SERIES_COLORS, STATUS_CONFIG, RATING_EMOJI, DEFAULT_GAME_TAG_PRESETS, DEFAULT_SETTINGS } from '../constants';
 import { t, i18n } from '../localization';
-import { VirtualGrid } from './library/VirtualGrid';
+import { VirtualGrid, VirtualGridController, VirtualGroupedGrid } from './library/VirtualGrid';
 import { showMediaContextMenu } from './library/contextMenu';
 import { EffectiveLayout, LayoutCalculator } from './library/LayoutCalculator';
 import { RenderScrollMode, ScrollAnchor, ScrollManager } from './library/ScrollManager';
 import {
     collectToolbarTags,
+    getBuiltInFieldDefinitions,
     getFilterFlagsForMediaType,
     getRandomLabelForMediaType,
     getRandomTitleLabelForMediaType,
@@ -30,8 +31,12 @@ import {
     applyViewModeClass,
     createGrid,
     renderRandomCard,
-    shouldGroupBySeries,
 } from './library/rendering';
+import {
+    cloneLibraryViewState,
+    collectYamlFieldDefinitions,
+    groupMediaItems,
+} from '../services/media/libraryViewState';
 
 type AppSettingsApi = { open: () => void; openTabById: (id: string) => void };
 type IdleDeadlineLike = { didTimeout: boolean; timeRemaining: () => number };
@@ -49,7 +54,7 @@ type CardRenderTask = {
 
 const VISUAL_REFRESH_IDLE_TIMEOUT_MS = 50;
 const VISUAL_REFRESH_FALLBACK_MS = 120;
-const CARD_RENDER_BATCH_SIZE = 24;
+const CARD_RENDER_BATCH_SIZE = 8;
 const LAYOUT_RESIZE_SETTLE_MS = 180;
 const OPTIMISTIC_METADATA_SUPPRESS_MS = 1200;
 
@@ -87,29 +92,34 @@ export class LibraryView extends ItemView {
         searchTerm: '',
         tags: [],
         genres: [],
+        rules: [],
     };
+    private viewState: LibraryViewState = cloneLibraryViewState(DEFAULT_SETTINGS.games.viewState);
     private tagsDirty = true;
     private cachedLayout: EffectiveLayout | null = null;
     private layoutCalculator: LayoutCalculator;
     private scrollManager: ScrollManager;
 
     // Virtualization state
-    private virtualGrid: VirtualGrid<MediaItem> | null = null;
+    private virtualGrid: VirtualGridController | null = null;
     private visualRefreshRafId: number | null = null;
     private visualRefreshIdleId: number | null = null;
     private visualRefreshScheduled = false;
     private filterRafId: number | null = null;
     private cardBatchRafId: number | null = null;
+    private contentRevealAnimations = new Set<Animation>();
+    private cardReflowAnimations = new Set<Animation>();
     private resizeObserver: ResizeObserver | null = null;
+    private lastObservedLayoutWidth: number | null = null;
     private resizeLayoutRafId: number | null = null;
     private resizeSettleTimerId: number | null = null;
     private renderVersion = 0;
+    private loadGeneration = 0;
     private pendingFilterScrollMode: RenderScrollMode = 'none';
+    private pendingFilterScrollTop: number | null = null;
+    private editScrollRestore: { filePath: string; scrollTop: number } | null = null;
+    private editScrollRestoreTimerId: number | null = null;
     private optimisticMutations = new Map<string, number>();
-
-    private getCardHeight(): number {
-        return this.layoutCalculator.getCardHeight(this.getEffectiveLayout());
-    }
 
     constructor(leaf: WorkspaceLeaf, plugin: LorebasePluginInterface) {
         super(leaf);
@@ -167,6 +177,7 @@ export class LibraryView extends ItemView {
             const settings = this.plugin.settings;
             this.mediaType = this.plugin.getMediaType();
             const activeSettings = this.getActiveSettings();
+            this.setViewState(activeSettings.viewState, false);
             i18n.setLanguage(settings.language);
             this.gameService.setFolderPath(settings.games.folderPath);
             this.animeService.setFolderPath(settings.anime.folderPath);
@@ -229,8 +240,13 @@ export class LibraryView extends ItemView {
             this.cleanupVirtualization();
             this.cancelScheduledFilter();
             this.cancelCardBatch();
+            this.cancelContentAnimations();
             this.cancelScheduledVisualRefresh();
             this.cleanupLayoutResize();
+            if (this.editScrollRestoreTimerId !== null) {
+                window.clearTimeout(this.editScrollRestoreTimerId);
+                this.editScrollRestoreTimerId = null;
+            }
 
             // Destroy toolbar safely
             if (this.toolbar) {
@@ -334,14 +350,20 @@ export class LibraryView extends ItemView {
                 this.rebuildGameIndex();
             }
             this.tagsDirty = true;
-            this.applyFiltersAndSort({ scrollMode: 'preserve' });
+            const editScroll = this.getEditScrollRestore(file.path);
+            this.applyFiltersAndSort(editScroll
+                ? { scrollMode: 'position', scrollTop: editScroll.scrollTop }
+                : { scrollMode: 'preserve' });
         } else if (isInLibraryFolder) {
             // It's a new item in the active media type
             if (parsedItem) {
                 this.gameIndex.set(parsedItem.filePath, this.games.length);
                 this.games.push(parsedItem);
                 this.tagsDirty = true;
-                this.applyFiltersAndSort({ scrollMode: 'preserve' });
+                const editScroll = this.getEditScrollRestore(file.path);
+                this.applyFiltersAndSort(editScroll
+                    ? { scrollMode: 'position', scrollTop: editScroll.scrollTop }
+                    : { scrollMode: 'preserve' });
             }
         }
     }
@@ -350,6 +372,30 @@ export class LibraryView extends ItemView {
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!(file instanceof TFile)) return;
         this.handleMetadataChange(file);
+    }
+
+    private getEditScrollRestore(filePath: string): { filePath: string; scrollTop: number } | null {
+        return this.editScrollRestore?.filePath === filePath ? this.editScrollRestore : null;
+    }
+
+    private beginEditScrollRestore(filePath: string, scrollTop: number): void {
+        if (this.editScrollRestoreTimerId !== null) {
+            window.clearTimeout(this.editScrollRestoreTimerId);
+            this.editScrollRestoreTimerId = null;
+        }
+        this.editScrollRestore = { filePath, scrollTop };
+    }
+
+    private finishEditScrollRestore(filePath: string): void {
+        if (this.editScrollRestoreTimerId !== null) {
+            window.clearTimeout(this.editScrollRestoreTimerId);
+        }
+        this.editScrollRestoreTimerId = window.setTimeout(() => {
+            this.editScrollRestoreTimerId = null;
+            if (this.editScrollRestore?.filePath === filePath) {
+                this.editScrollRestore = null;
+            }
+        }, 600);
     }
 
     private invalidateActiveServiceCache(): void {
@@ -386,6 +432,8 @@ export class LibraryView extends ItemView {
                 const activeSettings = this.getActiveSettings();
                 activeSettings.sortField = field;
                 activeSettings.sortOrder = order;
+                this.viewState.sort = { field, order };
+                activeSettings.viewState = cloneLibraryViewState(this.viewState);
                 void this.plugin.saveSettings();
                 this.applyFiltersAndSort({ scrollMode: 'top' });
             },
@@ -409,6 +457,80 @@ export class LibraryView extends ItemView {
                 this.applyViewMode();
                 this.render({ scrollMode: 'top' });
             },
+            onViewStateChange: (state) => {
+                this.setViewState(state, true);
+                this.applyFiltersAndSort({ scrollMode: 'top' });
+            },
+            onApplySavedView: (id) => {
+                const settings = this.getActiveSettings();
+                const saved = id ? settings.savedViews.find((view) => view.id === id) : null;
+                settings.activeSavedViewId = saved?.id ?? null;
+                this.setViewState(saved?.state ?? this.getDefaultViewState(), true);
+                this.toolbar?.updateViewState(
+                    this.viewState,
+                    settings.savedViews,
+                    settings.activeSavedViewId,
+                    this.getDefaultViewState()
+                );
+                this.applyFiltersAndSort({ scrollMode: 'top' });
+            },
+            onSaveView: (name, state) => {
+                const settings = this.getActiveSettings();
+                const normalizedName = this.uniqueSavedViewName(name, settings.savedViews.map((view) => view.name));
+                const id = `view-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+                settings.savedViews.push({ id, name: normalizedName, state: cloneLibraryViewState(state) });
+                settings.activeSavedViewId = id;
+                void this.plugin.saveSettings();
+                this.toolbar?.updateViewState(state, settings.savedViews, id, this.getDefaultViewState());
+            },
+            onUpdateSavedView: (id, state) => {
+                const settings = this.getActiveSettings();
+                const saved = settings.savedViews.find((view) => view.id === id);
+                if (!saved || saved.readonly) return;
+                saved.state = cloneLibraryViewState(state);
+                settings.activeSavedViewId = id;
+                void this.plugin.saveSettings();
+                this.toolbar?.updateViewState(state, settings.savedViews, id, this.getDefaultViewState());
+            },
+            onRenameSavedView: (id, name) => {
+                const settings = this.getActiveSettings();
+                const saved = settings.savedViews.find((view) => view.id === id);
+                if (!saved || saved.readonly) return;
+                saved.name = this.uniqueSavedViewName(
+                    name,
+                    settings.savedViews.filter((view) => view.id !== id).map((view) => view.name)
+                );
+                void this.plugin.saveSettings();
+                this.toolbar?.updateViewState(this.viewState, settings.savedViews, id, this.getDefaultViewState());
+            },
+            onDeleteSavedView: (id) => {
+                const settings = this.getActiveSettings();
+                settings.savedViews = settings.savedViews.filter((view) => view.id !== id || view.readonly);
+                settings.activeSavedViewId = null;
+                this.setViewState(this.getDefaultViewState(), true);
+                this.toolbar?.updateViewState(
+                    this.viewState,
+                    settings.savedViews,
+                    null,
+                    this.getDefaultViewState()
+                );
+                this.applyFiltersAndSort({ scrollMode: 'top' });
+            },
+            onResetView: () => {
+                const settings = this.getActiveSettings();
+                settings.activeSavedViewId = null;
+                this.setViewState(this.getDefaultViewState(), true);
+                this.toolbar?.updateViewState(
+                    this.viewState,
+                    settings.savedViews,
+                    null,
+                    this.getDefaultViewState()
+                );
+                this.applyFiltersAndSort({ scrollMode: 'top' });
+            },
+            onMediaTypeChange: (mediaType) => {
+                void this.plugin.switchMediaType(mediaType);
+            },
         };
 
         const activeSettings = this.getActiveSettings();
@@ -416,16 +538,20 @@ export class LibraryView extends ItemView {
             container,
             callbacks,
             {
-                field: activeSettings.sortField,
-                order: activeSettings.sortOrder
+                field: this.viewState.sort.field,
+                order: this.viewState.sort.order
             },
             this.filter,
             this.viewMode,
-            activeSettings.showAdultInAll,
-            this.getStatusOptions(),
             this.getSortOptions(),
-            this.getFilterFlags(),
-            this.getRandomLabel()
+            this.getRandomLabel(),
+            this.viewState,
+            activeSettings.savedViews,
+            activeSettings.activeSavedViewId,
+            this.getFieldDefinitions(),
+            this.getDefaultViewState(),
+            this.mediaType,
+            this.plugin.getEnabledMediaTypes()
         );
     }
 
@@ -433,27 +559,35 @@ export class LibraryView extends ItemView {
      * Load games from the vault
      */
     private async loadGames(): Promise<void> {
+        const generation = ++this.loadGeneration;
+        const requestedMediaType = this.mediaType;
         this.showLoading();
+        await this.waitForNextFrame();
+        if (this.isDestroyed || generation !== this.loadGeneration) return;
 
         try {
-            if (this.mediaType === 'anime') {
-                this.games = await this.animeService.loadAnime();
-            } else if (this.mediaType === 'movie') {
-                this.games = await this.movieService.loadItems();
-            } else if (this.mediaType === 'series') {
-                this.games = await this.seriesService.loadItems();
-            } else if (this.mediaType === 'book') {
-                this.games = await this.bookService.loadItems();
-            } else if (this.mediaType === 'manga') {
-                this.games = await this.mangaService.loadItems();
+            let games: MediaItem[];
+            if (requestedMediaType === 'anime') {
+                games = await this.animeService.loadAnime();
+            } else if (requestedMediaType === 'movie') {
+                games = await this.movieService.loadItems();
+            } else if (requestedMediaType === 'series') {
+                games = await this.seriesService.loadItems();
+            } else if (requestedMediaType === 'book') {
+                games = await this.bookService.loadItems();
+            } else if (requestedMediaType === 'manga') {
+                games = await this.mangaService.loadItems();
             } else {
-                this.games = await this.gameService.loadGames();
+                games = await this.gameService.loadGames();
             }
+            if (this.isDestroyed || generation !== this.loadGeneration || this.mediaType !== requestedMediaType) return;
+            this.games = games;
             this.rebuildGameIndex();
             this.tagsDirty = true;
             this.cachedLayout = null;
             this.applyFiltersAndSort({ scrollMode: 'none' });
         } catch (e) {
+            if (generation !== this.loadGeneration || this.mediaType !== requestedMediaType) return;
             console.error('Error loading games:', e);
             this.showError(t('errorLoadingItems'));
         }
@@ -462,13 +596,16 @@ export class LibraryView extends ItemView {
     /**
      * Apply filters and sorting, then render
      */
-    private applyFiltersAndSort(options: { scrollMode?: RenderScrollMode } = {}): void {
+    private applyFiltersAndSort(options: { scrollMode?: RenderScrollMode; scrollTop?: number } = {}): void {
         if (this.isDestroyed) return;
 
         this.pendingFilterScrollMode = this.mergeScrollModes(
             this.pendingFilterScrollMode,
             options.scrollMode ?? 'preserve'
         );
+        if (options.scrollMode === 'position' && Number.isFinite(options.scrollTop)) {
+            this.pendingFilterScrollTop = options.scrollTop as number;
+        }
 
         if (this.filterRafId !== null) {
             return;
@@ -477,12 +614,14 @@ export class LibraryView extends ItemView {
         this.filterRafId = window.requestAnimationFrame(() => {
             this.filterRafId = null;
             const scrollMode = this.pendingFilterScrollMode;
+            const scrollTop = this.pendingFilterScrollTop;
             this.pendingFilterScrollMode = 'none';
-            this.runFiltersAndSort(scrollMode);
+            this.pendingFilterScrollTop = null;
+            this.runFiltersAndSort(scrollMode, scrollTop);
         });
     }
 
-    private runFiltersAndSort(scrollMode: RenderScrollMode): void {
+    private runFiltersAndSort(scrollMode: RenderScrollMode, scrollTop: number | null = null): void {
         // Don't process if view is destroyed
         if (this.isDestroyed) return;
 
@@ -493,49 +632,50 @@ export class LibraryView extends ItemView {
                 this.filteredGames = this.animeService.filterAndSort(
                     this.games as AnimeItem[],
                     this.filter,
-                    settings.sortField,
-                    settings.sortOrder
+                    this.viewState.sort.field,
+                    this.viewState.sort.order
                 );
             } else if (this.mediaType === 'movie') {
                 this.filteredGames = this.movieService.filterAndSort(
                     this.games as MovieItem[],
                     this.filter,
-                    settings.sortField,
-                    settings.sortOrder
+                    this.viewState.sort.field,
+                    this.viewState.sort.order
                 );
             } else if (this.mediaType === 'series') {
                 this.filteredGames = this.seriesService.filterAndSort(
                     this.games as SeriesItem[],
                     this.filter,
-                    settings.sortField,
-                    settings.sortOrder
+                    this.viewState.sort.field,
+                    this.viewState.sort.order
                 );
             } else if (this.mediaType === 'book') {
                 this.filteredGames = this.bookService.filterAndSort(
                     this.games as ReadingItem[],
                     this.filter,
-                    settings.sortField,
-                    settings.sortOrder
+                    this.viewState.sort.field,
+                    this.viewState.sort.order
                 );
             } else if (this.mediaType === 'manga') {
                 this.filteredGames = this.mangaService.filterAndSort(
                     this.games as ReadingItem[],
                     this.filter,
-                    settings.sortField,
-                    settings.sortOrder
+                    this.viewState.sort.field,
+                    this.viewState.sort.order,
+                    settings.showAdultInAll
                 );
             } else {
                 this.filteredGames = this.gameService.filterAndSort(
                     this.games as GameItem[],
                     this.filter,
-                    settings.sortField,
-                    settings.sortOrder,
+                    this.viewState.sort.field,
+                    this.viewState.sort.order,
                     settings.showAdultInAll
                 );
             }
 
             this.updateToolbarTags();
-            this.render({ scrollMode });
+            this.render({ scrollMode, scrollTop: scrollTop ?? undefined });
         } catch (e) {
             console.error('Error applying filters/sort:', e);
             this.showError(t('errorProcessingList'));
@@ -544,6 +684,7 @@ export class LibraryView extends ItemView {
 
     private mergeScrollModes(current: RenderScrollMode, next: RenderScrollMode): RenderScrollMode {
         if (current === 'top' || next === 'top') return 'top';
+        if (current === 'position' || next === 'position') return 'position';
         if (current === 'preserve' || next === 'preserve') return 'preserve';
         return 'none';
     }
@@ -554,22 +695,33 @@ export class LibraryView extends ItemView {
             this.filterRafId = null;
         }
         this.pendingFilterScrollMode = 'none';
+        this.pendingFilterScrollTop = null;
     }
 
     /**
      * Render the games grid
      */
-    private render(options: { scrollMode?: RenderScrollMode } = {}): void {
+    private render(options: { scrollMode?: RenderScrollMode; scrollTop?: number } = {}): void {
         if (!this.libraryContentEl) return;
 
         const version = ++this.renderVersion;
         const scrollMode = options.scrollMode ?? 'none';
-        const anchor = scrollMode === 'preserve' ? this.scrollManager.capture() : null;
+        const anchor = scrollMode === 'position'
+            ? {
+                scrollTop: options.scrollTop ?? this.contentEl.scrollTop,
+                filePath: null,
+                offsetTop: null,
+            }
+            : scrollMode === 'preserve'
+                ? this.scrollManager.capture()
+                : null;
 
         // CRITICAL: Cleanup previous virtualization to remove event listeners
         this.cleanupVirtualization();
         this.cancelCardBatch();
+        this.cancelContentAnimations();
 
+        this.libraryContentEl.addClass('is-rebuilding');
         this.libraryContentEl.empty();
 
         if (this.filteredGames.length === 0) {
@@ -577,63 +729,67 @@ export class LibraryView extends ItemView {
                 cls: 'lorebase-empty',
                 text: this.getEmptyStateText()
             });
-            this.scrollManager.apply(scrollMode, anchor);
+            this.finishContentRebuild(version, () => this.scrollManager.apply(scrollMode, anchor));
             return;
         }
 
-        const settings = this.getActiveSettings();
-
-        const shouldGroup = shouldGroupBySeries(
-            this.mediaType,
-            settings.sortField,
-            this.viewMode,
-            this.filter,
-            this.filteredGames.length
-        );
+        const shouldGroup = this.viewState.group.mode !== 'none';
 
         if (shouldGroup) {
-            this.renderGroupedBySeries(scrollMode, anchor, version);
+            this.renderGroupedView(scrollMode, anchor, version);
         } else {
             this.renderFlatGrid(scrollMode, anchor, version);
         }
     }
 
-    /**
-     * Render games grouped by series
-     */
-    private renderGroupedBySeries(scrollMode: RenderScrollMode, anchor: ScrollAnchor | null, version: number): void {
+    private renderGroupedView(scrollMode: RenderScrollMode, anchor: ScrollAnchor | null, version: number): void {
         if (!this.libraryContentEl) return;
-
-        const settings = this.getActiveSettings();
         const layout = this.getEffectiveLayout();
-        const renderedLayout = {
-            ...layout,
-            columns: this.getRenderedColumns(layout),
-        };
-        const grouped = this.gameService.groupBySeries(this.filteredGames as GameItem[], settings.sortOrder);
-        const tasks: CardRenderTask[] = [];
-        let colorIndex = 0;
-
-        for (const [series, seriesGames] of grouped) {
-            const section = this.libraryContentEl.createDiv({ cls: 'lorebase-series-section' });
-            const allCompleted = seriesGames.every((g) => g.status === 'completed');
-            const titleText = allCompleted ? `\u{1F3C6} ${series}` : series;
-
-            const color = SERIES_COLORS[colorIndex % SERIES_COLORS.length];
-            const title = section.createDiv({
-                cls: 'lorebase-series-title',
-                text: titleText
+        const renderedLayout = { ...layout, columns: this.getRenderedColumns(layout) };
+        const locale = i18n.getLanguage() === 'uk' ? 'uk-UA' : i18n.getLanguage() === 'ru' ? 'ru-RU' : 'en-US';
+        const groups = groupMediaItems(
+            this.filteredGames,
+            this.viewState.group.mode,
+            this.viewState.group.order,
+            locale
+        );
+        if (this.filteredGames.length > 100) {
+            this.gridEl = createGrid({
+                container: this.libraryContentEl,
+                layout: renderedLayout,
+                className: 'lorebase-grid lorebase-virtual-group-grid',
             });
-            title.style.borderLeftColor = color;
-            colorIndex++;
-
-            const grid = createGrid({ container: section, layout: renderedLayout, className: 'lorebase-grid' });
-            for (const game of seriesGames) {
-                tasks.push({ parent: grid, item: game });
-            }
+            const columns = this.getRenderedColumns(layout);
+            const cardHeight = this.layoutCalculator.calculateActualCardHeight(layout, columns, this.gridEl);
+            this.virtualGrid = new VirtualGroupedGrid<MediaItem>({
+                gridEl: this.gridEl,
+                scrollContainer: this.contentEl,
+                groups,
+                colors: SERIES_COLORS,
+                columns,
+                orientation: layout.orientation,
+                cardHeight,
+                buffer: VIRTUALIZATION_BUFFER,
+                createCard: (parent, item) => this.createCard(parent, item),
+            });
+            this.finishContentRebuild(version, () => this.scrollManager.apply(scrollMode, anchor));
+            return;
         }
+        const tasks: CardRenderTask[] = [];
 
-        this.renderCardsInBatches(tasks, version, () => this.scrollManager.apply(scrollMode, anchor));
+        groups.forEach((group, index) => {
+            const section = this.libraryContentEl!.createDiv({ cls: 'lorebase-series-section lorebase-view-group-section' });
+            const title = section.createDiv({ cls: 'lorebase-series-title lorebase-view-group-title' });
+            title.createSpan({ text: group.label });
+            title.createSpan({ cls: 'lorebase-view-group-count', text: String(group.items.length) });
+            title.style.borderLeftColor = SERIES_COLORS[index % SERIES_COLORS.length];
+            const grid = createGrid({ container: section, layout: renderedLayout, className: 'lorebase-grid' });
+            for (const item of group.items) tasks.push({ parent: grid, item });
+        });
+
+        this.renderCardsInBatches(tasks, version, () => {
+            this.finishContentRebuild(version, () => this.scrollManager.apply(scrollMode, anchor));
+        });
     }
 
     private getEmptyStateText(): string {
@@ -677,12 +833,74 @@ export class LibraryView extends ItemView {
                 parent: this.gridEl as HTMLElement,
                 item: game,
             }));
-            this.renderCardsInBatches(tasks, version, () => this.scrollManager.apply(scrollMode, anchor));
+            this.renderCardsInBatches(tasks, version, () => {
+                this.finishContentRebuild(version, () => this.scrollManager.apply(scrollMode, anchor));
+            });
         } else {
             // Use virtualization for large collections
             this.enableVirtualization();
-            this.scrollManager.apply(scrollMode, anchor);
+            this.finishContentRebuild(version, () => this.scrollManager.apply(scrollMode, anchor));
         }
+    }
+
+    private finishContentRebuild(version: number, onReady: () => void): void {
+        if (this.isDestroyed || version !== this.renderVersion || !this.libraryContentEl) return;
+        onReady();
+        window.requestAnimationFrame(() => {
+            if (this.isDestroyed || version !== this.renderVersion || !this.libraryContentEl) return;
+            const content = this.libraryContentEl;
+            content.removeClass('is-rebuilding');
+
+            const viewport = this.contentEl.getBoundingClientRect();
+            const visibleCards = Array.from(content.querySelectorAll<HTMLElement>('.lorebase-card'))
+                .filter((card) => {
+                    const rect = card.getBoundingClientRect();
+                    return rect.bottom >= viewport.top && rect.top <= viewport.bottom;
+                })
+                .slice(0, 32);
+            const targets = visibleCards.length > 0
+                ? visibleCards
+                : content.firstElementChild instanceof HTMLElement
+                    ? [content.firstElementChild]
+                    : [];
+
+            targets.forEach((target, index) => {
+                if (typeof target.animate !== 'function') return;
+                const hoverOffset = target.matches('.lorebase-card:hover') ? -4 : 0;
+                const animation = target.animate(
+                    [
+                        { opacity: 0, transform: `translate3d(0, ${hoverOffset + 10}px, 0)` },
+                        { opacity: 1, transform: `translate3d(0, ${hoverOffset}px, 0)` },
+                    ],
+                    {
+                        duration: 280,
+                        delay: Math.min(index * 14, 112),
+                        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+                        fill: 'backwards',
+                    }
+                );
+                this.trackAnimation(animation, this.contentRevealAnimations);
+            });
+        });
+    }
+
+    private trackAnimation(animation: Animation, collection: Set<Animation>): void {
+        collection.add(animation);
+        const remove = (): void => {
+            collection.delete(animation);
+        };
+        animation.onfinish = remove;
+        animation.oncancel = remove;
+    }
+
+    private cancelAnimations(collection: Set<Animation>): void {
+        for (const animation of collection) animation.cancel();
+        collection.clear();
+    }
+
+    private cancelContentAnimations(): void {
+        this.cancelAnimations(this.contentRevealAnimations);
+        this.cancelAnimations(this.cardReflowAnimations);
     }
 
     private renderCardsInBatches(
@@ -758,14 +976,28 @@ export class LibraryView extends ItemView {
         if (typeof ResizeObserver === 'undefined') return;
 
         this.resizeObserver?.disconnect();
-        this.resizeObserver = new ResizeObserver(() => {
+        this.lastObservedLayoutWidth = null;
+        this.resizeObserver = new ResizeObserver((entries) => {
+            const width = Math.round(entries[0]?.contentRect.width ?? this.contentEl.clientWidth);
+            if (width <= 0) return;
+            if (this.lastObservedLayoutWidth === null) {
+                this.lastObservedLayoutWidth = width;
+                return;
+            }
+            if (width === this.lastObservedLayoutWidth) return;
+            this.lastObservedLayoutWidth = width;
             this.markLayoutResizing();
-            this.scheduleVirtualLayoutRefresh();
         });
         this.resizeObserver.observe(this.contentEl);
     }
 
-    private scheduleVirtualLayoutRefresh(): void {
+    private waitForNextFrame(): Promise<void> {
+        return new Promise((resolve) => {
+            window.requestAnimationFrame(() => resolve());
+        });
+    }
+
+    private scheduleVirtualLayoutRefresh(onComplete?: () => void): void {
         if (this.isDestroyed || !this.libraryContentEl) return;
 
         if (this.resizeLayoutRafId !== null) return;
@@ -774,6 +1006,8 @@ export class LibraryView extends ItemView {
             this.resizeLayoutRafId = null;
             if (this.isDestroyed || !this.libraryContentEl) return;
 
+            this.cancelAnimations(this.cardReflowAnimations);
+            const previousPositions = this.captureRenderedCardPositions();
             const layout = this.getEffectiveLayout();
             const columns = this.getRenderedColumns(layout);
             this.updateRenderedGridColumns(columns);
@@ -786,7 +1020,52 @@ export class LibraryView extends ItemView {
                     cardHeight,
                 });
             }
+            this.animateRenderedCardReflow(previousPositions);
+            onComplete?.();
         });
+    }
+
+    private captureRenderedCardPositions(): Map<string, DOMRect> {
+        const positions = new Map<string, DOMRect>();
+        this.libraryContentEl?.querySelectorAll<HTMLElement>('.lorebase-card[data-lorebase-file-path]')
+            .forEach((card) => {
+                const key = card.dataset.lorebaseFilePath;
+                if (key) positions.set(key, card.getBoundingClientRect());
+            });
+        return positions;
+    }
+
+    private animateRenderedCardReflow(previousPositions: Map<string, DOMRect>): void {
+        if (!this.libraryContentEl || previousPositions.size === 0) return;
+
+        this.libraryContentEl.querySelectorAll<HTMLElement>('.lorebase-card[data-lorebase-file-path]')
+            .forEach((card) => {
+                const key = card.dataset.lorebaseFilePath;
+                const previous = key ? previousPositions.get(key) : null;
+                if (!previous || typeof card.animate !== 'function') return;
+
+                const current = card.getBoundingClientRect();
+                const deltaX = previous.left - current.left;
+                const deltaY = previous.top - current.top;
+                if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
+
+                const hoverOffset = card.matches(':hover') ? -4 : 0;
+                const animation = card.animate(
+                    [
+                        {
+                            transform: `translate3d(${deltaX}px, ${deltaY + hoverOffset}px, 0)`,
+                        },
+                        {
+                            transform: `translate3d(0, ${hoverOffset}px, 0)`,
+                        },
+                    ],
+                    {
+                        duration: 380,
+                        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+                    }
+                );
+                this.trackAnimation(animation, this.cardReflowAnimations);
+            });
     }
 
     private updateRenderedGridColumns(columns: number): void {
@@ -799,7 +1078,7 @@ export class LibraryView extends ItemView {
 
     private markLayoutResizing(): void {
         if (this.resizeSettleTimerId === null) {
-            this.contentEl.addClass('is-layout-resizing');
+            this.virtualGrid?.setLayoutResizing(true);
         }
 
         if (this.resizeSettleTimerId !== null) {
@@ -808,7 +1087,9 @@ export class LibraryView extends ItemView {
 
         this.resizeSettleTimerId = window.setTimeout(() => {
             this.resizeSettleTimerId = null;
-            this.contentEl.removeClass('is-layout-resizing');
+            this.scheduleVirtualLayoutRefresh(() => {
+                this.virtualGrid?.setLayoutResizing(false);
+            });
         }, LAYOUT_RESIZE_SETTLE_MS);
     }
 
@@ -817,6 +1098,7 @@ export class LibraryView extends ItemView {
             this.resizeObserver.disconnect();
             this.resizeObserver = null;
         }
+        this.lastObservedLayoutWidth = null;
 
         if (this.resizeLayoutRafId !== null) {
             window.cancelAnimationFrame(this.resizeLayoutRafId);
@@ -828,7 +1110,7 @@ export class LibraryView extends ItemView {
             this.resizeSettleTimerId = null;
         }
 
-        this.contentEl.removeClass('is-layout-resizing');
+        this.virtualGrid?.setLayoutResizing(false);
     }
 
     /**
@@ -843,14 +1125,14 @@ export class LibraryView extends ItemView {
             game,
             {
                 onClick: (g) => {
-                    void this.openGame(g);
+                    void this.handleCardClick(g);
                 },
                 onContextMenu: (g, x, y) => this.showContextMenu(g, x, y),
             },
             layout.cardSize,
             layout.orientation,
             activeSettings.cardStyle,
-            activeSettings.sortField,
+            this.viewState.sort.field,
             this.getBadgeProfile(game.type),
             overlayProfile.layout,
             overlayProfile.visibility,
@@ -860,7 +1142,9 @@ export class LibraryView extends ItemView {
                 showSeason: activeSettings.showAnimeSeasonProgress,
                 showEpisode: activeSettings.showAnimeEpisodeProgress,
             },
-            this.getStatusLabelOverrides(game.type)
+            this.getStatusLabelOverrides(game.type),
+            this.getCompletionDateBadgeFormat(game.type),
+            (value) => this.plugin.getMetadataService()?.getImageUrl(value) ?? null
         );
         card.getElement().dataset.lorebaseFilePath = game.filePath;
         card.getElement().toggleClass(
@@ -884,6 +1168,9 @@ export class LibraryView extends ItemView {
             || left.hasCustomPoster !== right.hasCustomPoster
             || left.isAdult !== right.isAdult
             || left.status !== right.status
+            || left.started !== right.started
+            || left.finished !== right.finished
+            || !this.areRawFieldsEquivalent(left.rawFields, right.rawFields)
             || !this.areStringArraysEquivalent(left.tags, right.tags)
             || !this.areStringArraysEquivalent(left.genres, right.genres)
         ) {
@@ -905,6 +1192,8 @@ export class LibraryView extends ItemView {
         if (left.type === 'game' && right.type === 'game') {
             return left.gameSeries === right.gameSeries
                 && left.dateCompleted === right.dateCompleted
+                && left.started === right.started
+                && left.finished === right.finished
                 && left.releaseDate === right.releaseDate
                 && left.publisher === right.publisher
                 && left.developer === right.developer;
@@ -970,6 +1259,28 @@ export class LibraryView extends ItemView {
                 && this.areRelatedMediaEquivalent(left.relatedMedia, right.relatedMedia);
         }
 
+        return true;
+    }
+
+    private areRawFieldsEquivalent(
+        left: MediaItem['rawFields'],
+        right: MediaItem['rawFields']
+    ): boolean {
+        const leftKeys = Object.keys(left ?? {});
+        const rightKeys = Object.keys(right ?? {});
+        if (leftKeys.length !== rightKeys.length) return false;
+        for (const key of leftKeys) {
+            const leftValue = left?.[key];
+            const rightValue = right?.[key];
+            if (Array.isArray(leftValue) || Array.isArray(rightValue)) {
+                if (!Array.isArray(leftValue) || !Array.isArray(rightValue)) return false;
+                if (leftValue.length !== rightValue.length || leftValue.some((value, index) => value !== rightValue[index])) {
+                    return false;
+                }
+            } else if (leftValue !== rightValue) {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -1039,6 +1350,27 @@ export class LibraryView extends ItemView {
         await this.app.workspace.openLinkText(game.filePath, '', false);
     }
 
+    private async handleCardClick(game: MediaItem): Promise<void> {
+        if (this.plugin.settings.cardClickAction === 'edit') {
+            this.openEditModal(game);
+            return;
+        }
+        await this.openGame(game);
+    }
+
+    private openEditModal(item: MediaItem): void {
+        const scrollTop = this.contentEl.scrollTop;
+        this.plugin.showEditModal(
+            item,
+            () => {
+                this.refreshFileFromCache(item.filePath);
+                window.setTimeout(() => this.refreshFileFromCache(item.filePath), 100);
+                this.finishEditScrollRestore(item.filePath);
+            },
+            () => this.beginEditScrollRestore(item.filePath, scrollTop)
+        );
+    }
+
     /**
      * Show context menu for a game
      */
@@ -1049,11 +1381,13 @@ export class LibraryView extends ItemView {
             onApplyFiltersAndSort: () => this.applyFiltersAndSort({ scrollMode: 'preserve' }),
             onItemMutated: (item, changedFields) => this.handleContextItemMutation(item, changedFields),
             onEdit: (item) => {
-                this.plugin.showEditModal(item, () => {
-                    this.refreshFileFromCache(item.filePath);
-                    window.setTimeout(() => this.refreshFileFromCache(item.filePath), 100);
-                });
+                this.openEditModal(item);
             },
+            onOpen: (item) => {
+                void this.openGame(item);
+            },
+            cardClickAction: this.plugin.settings.cardClickAction ?? 'open',
+            ratingMode: this.getBadgeProfile(game.type).rating.mode,
             onDelete: (item) => {
                 this.plugin.showDeleteModal(item, async () => {
                     if (this.isDestroyed) return;
@@ -1072,6 +1406,12 @@ export class LibraryView extends ItemView {
                     }
                     this.games = this.games.filter(g => g.filePath !== item.filePath);
                     this.applyFiltersAndSort({ scrollMode: 'preserve' });
+                });
+            },
+            onSourceAction: (item, relink) => {
+                void this.plugin.enrichMediaItem(item, relink, () => {
+                    if (this.isDestroyed) return;
+                    this.refreshFileFromCache(item.filePath);
                 });
             },
             updateAnime: (anime, updates) => {
@@ -1117,24 +1457,15 @@ export class LibraryView extends ItemView {
     }
 
     private shouldFullRefreshAfterMutation(changedFields: string[]): boolean {
-        const settings = this.getActiveSettings();
-        if (changedFields.includes('userRating') && settings.sortField === 'rating') return true;
+        if (changedFields.includes('userRating') && this.viewState.sort.field === 'rating') return true;
+        if ((this.viewState.sort.field === 'dateFinished' || this.viewState.sort.field === 'dateCompleted') && changedFields.some((field) => (
+            field === 'status'
+            || field === 'finished'
+            || field === 'dateCompleted'
+        ))) return true;
+        if (this.viewState.sort.field === 'dateStarted' && changedFields.includes('started')) return true;
         if (changedFields.includes('status') && this.filter.statuses.length > 0) return true;
         if (changedFields.includes('favorite') && this.filter.favoriteOnly) return true;
-        if (changedFields.some((field) => (
-            field === 'episodeCurrent'
-            || field === 'episodeTotal'
-            || field === 'seasonCurrent'
-            || field === 'seasonTotal'
-            || field === 'pageCurrent'
-            || field === 'pageTotal'
-            || field === 'chapterCurrent'
-            || field === 'chapterTotal'
-            || field === 'volumeCurrent'
-            || field === 'volumeTotal'
-            || field === 'activePartId'
-            || field === 'parts'
-        ))) return true;
         return false;
     }
 
@@ -1145,6 +1476,9 @@ export class LibraryView extends ItemView {
             return;
         }
         this.updateRenderedCardBadges(current, item);
+        if (!GameCard.refreshElement(current, item)) {
+            this.applyFiltersAndSort({ scrollMode: 'preserve' });
+        }
     }
 
     private updateRenderedCardBadges(cardEl: HTMLElement, item: MediaItem): void {
@@ -1238,7 +1572,9 @@ export class LibraryView extends ItemView {
         const overrides = this.getStatusLabelOverrides(item.type);
         const isReadingMedia = item.type === 'book' || item.type === 'manga';
         const fallback: Record<string, string> = {
-            completed: item.type === 'game' ? t('statusPlayed') : t('statusCompleted'),
+            completed: item.type === 'game'
+                ? t('statusPlayed')
+                : isReadingMedia ? t('statusReadCompleted') : t('statusCompleted'),
             playing: t('statusPlaying'),
             dropped: t('statusDropped'),
             sandbox: t('statusSandbox'),
@@ -1253,9 +1589,53 @@ export class LibraryView extends ItemView {
             && item.status === 'completed'
             && override === t('statusPlayed')
             && t('statusPlayed') !== t('statusCompleted');
-        return !isLegacyGameCompletedLabel && override
+        let label = !isLegacyGameCompletedLabel && override
             ? override
             : fallback[item.status] || String(item.status);
+        if (this.shouldShowFinishedDateOnBadge(item)) {
+            const formatted = this.formatFinishedDate(item.finished);
+            if (formatted) label = `${label} | ${formatted}`;
+        }
+        return label;
+    }
+
+    private shouldShowFinishedDateOnBadge(item: MediaItem): boolean {
+        return (this.viewState.sort.field === 'dateFinished' || this.viewState.sort.field === 'dateCompleted')
+            && item.status === 'completed'
+            && Boolean(this.getFinishedTimestamp(item.finished));
+    }
+
+    private formatFinishedDate(value: string | null | undefined): string | null {
+        const timestamp = this.getFinishedTimestamp(value);
+        if (!timestamp) return null;
+        const locale = i18n.getLanguage() === 'ru' ? 'ru-RU' : 'en-US';
+        const options: Intl.DateTimeFormatOptions = this.getCompletionDateBadgeFormat(this.mediaType) === 'full'
+            ? { month: 'short', day: 'numeric', year: 'numeric' }
+            : { month: 'short', day: 'numeric' };
+        try {
+            return new Intl.DateTimeFormat(locale, options).format(new Date(timestamp));
+        } catch {
+            return new Date(timestamp).toLocaleDateString(locale, options);
+        }
+    }
+
+    private getFinishedTimestamp(value: string | null | undefined): number | null {
+        if (!value) return null;
+        const parsed = Date.parse(value);
+        return Number.isNaN(parsed) ? null : parsed;
+    }
+
+    private getCompletionDateBadgeFormat(mediaType: MediaType): LorebaseSettings['completionDateBadgeFormat'] {
+        const key = mediaType === 'game'
+            ? 'games'
+            : mediaType === 'movie'
+                ? 'movies'
+                : mediaType === 'book'
+                    ? 'books'
+                    : mediaType;
+        return this.plugin.settings.completionDateBadgeFormats?.[key]
+            ?? this.plugin.settings.completionDateBadgeFormat
+            ?? 'short';
     }
 
     private createBadgeSvg(
@@ -1356,6 +1736,8 @@ export class LibraryView extends ItemView {
      */
     private showLoading(): void {
         if (!this.libraryContentEl) return;
+        this.cancelContentAnimations();
+        this.libraryContentEl.removeClass('is-rebuilding');
         this.libraryContentEl.empty();
         this.libraryContentEl.createDiv({ cls: 'lorebase-loading', text: t('notifyLoading') });
     }
@@ -1365,6 +1747,8 @@ export class LibraryView extends ItemView {
      */
     private showError(message: string): void {
         if (!this.libraryContentEl) return;
+        this.cancelContentAnimations();
+        this.libraryContentEl.removeClass('is-rebuilding');
         this.libraryContentEl.empty();
         this.libraryContentEl.createDiv({ cls: 'lorebase-error', text: message });
     }
@@ -1395,10 +1779,10 @@ export class LibraryView extends ItemView {
 
         if (this.toolbar) {
             this.toolbar.beginUpdate();
-            this.toolbar.updateStatusOptions(this.getStatusOptions());
+            this.toolbar.updateMediaContext(this.mediaType, this.plugin.getEnabledMediaTypes());
             this.toolbar.updateSortOptions(this.getSortOptions());
             this.toolbar.updateRandomLabel(this.getRandomLabel());
-            this.toolbar.refresh(activeSettings.showAdultInAll);
+            this.toolbar.refresh();
             this.toolbar.endUpdate();
         }
         await this.loadGames();
@@ -1474,35 +1858,40 @@ export class LibraryView extends ItemView {
 
         this.mediaType = nextType;
         const activeSettings = this.getActiveSettings();
+        this.setViewState(activeSettings.viewState, false);
         this.viewMode = activeSettings.orientation === 'horizontal' ? 'horizontal' : 'grid';
         this.applyViewMode();
         this.filter.adultOnly = false;
         this.filter.customOnly = false;
         this.invalidateActiveServiceCache();
         this.filter.statuses = [];
-        this.filter.tags = [];
-        this.filter.genres = [];
         this.tagsDirty = true;
         this.cachedLayout = null;
 
         if (this.toolbar) {
             this.toolbar.beginUpdate();
-            this.toolbar.updateStatusOptions(this.getStatusOptions());
+            this.toolbar.updateMediaContext(this.mediaType, this.plugin.getEnabledMediaTypes());
             this.toolbar.updateSortOptions(this.getSortOptions());
             this.toolbar.updateRandomLabel(this.getRandomLabel());
             this.toolbar.updateSort({
-                field: activeSettings.sortField,
-                order: activeSettings.sortOrder,
+                field: this.viewState.sort.field,
+                order: this.viewState.sort.order,
             });
             this.toolbar.updateFilter({
                 statuses: [],
-                tags: [],
-                genres: [],
+                tags: this.viewState.tags,
+                genres: this.viewState.genres,
                 adultOnly: false,
                 customOnly: false,
+                rules: this.viewState.rules,
             });
+            this.toolbar.updateViewState(
+                this.viewState,
+                activeSettings.savedViews,
+                activeSettings.activeSavedViewId,
+                this.getDefaultViewState()
+            );
             this.toolbar.updateViewMode(this.viewMode);
-            this.toolbar.updateFilterFlags(this.getFilterFlags());
             this.toolbar.endUpdate();
         }
     }
@@ -1514,6 +1903,47 @@ export class LibraryView extends ItemView {
         if (this.mediaType === 'book') return this.plugin.settings.books;
         if (this.mediaType === 'manga') return this.plugin.settings.manga;
         return this.plugin.settings.games;
+    }
+
+    private setViewState(state: LibraryViewState, persist: boolean): void {
+        this.viewState = cloneLibraryViewState(state);
+        this.filter.rules = this.viewState.rules;
+        this.filter.tags = [...this.viewState.tags];
+        this.filter.genres = [...this.viewState.genres];
+        this.filter.adultOnly = this.viewState.rules.some((rule) => rule.field === 'adult' && rule.operator === 'isTrue');
+        this.filter.customOnly = this.viewState.rules.some((rule) => rule.field === 'custom' && rule.operator === 'isTrue');
+        const settings = this.getActiveSettings();
+        settings.viewState = cloneLibraryViewState(this.viewState);
+        settings.sortField = this.viewState.sort.field;
+        settings.sortOrder = this.viewState.sort.order;
+        if (persist) void this.plugin.saveSettings();
+    }
+
+    private getDefaultViewState(): LibraryViewState {
+        const key = this.mediaType === 'game'
+            ? 'games'
+            : this.mediaType === 'movie'
+                ? 'movies'
+                : this.mediaType === 'book'
+                    ? 'books'
+                    : this.mediaType;
+        return cloneLibraryViewState(DEFAULT_SETTINGS[key].viewState);
+    }
+
+    private getFieldDefinitions(): FieldDefinition[] {
+        return [
+            ...getBuiltInFieldDefinitions(this.mediaType, this.getStatusOptions(), this.getFilterFlags()),
+            ...collectYamlFieldDefinitions(this.games),
+        ];
+    }
+
+    private uniqueSavedViewName(name: string, existing: string[]): string {
+        const base = name.trim() || (i18n.getLanguage() === 'ru' ? 'Новый вид' : 'New view');
+        const used = new Set(existing.map((entry) => entry.toLocaleLowerCase()));
+        if (!used.has(base.toLocaleLowerCase())) return base;
+        let index = 2;
+        while (used.has(`${base} ${index}`.toLocaleLowerCase())) index++;
+        return `${base} ${index}`;
     }
 
     private getOverlayProfile(mediaType: MediaType): {
@@ -1667,6 +2097,7 @@ export class LibraryView extends ItemView {
             groups.tags = groups.tags.filter((tag) => !presetByTag.has(tag.id));
         }
         this.toolbar.updateTags(groups);
+        this.toolbar.updateFieldDefinitions(this.getFieldDefinitions());
         this.tagsDirty = false;
     }
 

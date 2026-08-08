@@ -38,10 +38,22 @@ export class DeleteModal extends Modal {
         const headerIcon = header.createDiv({ cls: 'lorebase-delete-icon' });
         setIcon(headerIcon, 'trash-2');
         const headerText = header.createDiv({ cls: 'lorebase-delete-header-text' });
-        const isWatchMedia = this.item.type === 'anime' || this.item.type === 'movie' || this.item.type === 'series';
+        const isAnime = this.item.type === 'anime';
+        const isMovie = this.item.type === 'movie';
+        const isSeries = this.item.type === 'series';
         const isReadingMedia = this.item.type === 'book' || this.item.type === 'manga';
-        headerText.createEl('h2', { text: isReadingMedia ? t('deleteTitleReading') : isWatchMedia ? t('deleteTitleAnime') : t('deleteTitle') });
-        headerText.createEl('p', { cls: 'lorebase-delete-subtitle', text: isReadingMedia ? t('deleteSubtitleReading') : isWatchMedia ? t('deleteSubtitleAnime') : t('deleteSubtitle') });
+        const title = isReadingMedia
+            ? t('deleteTitleReading')
+            : isMovie ? t('deleteTitleMovie')
+                : isSeries ? t('deleteTitleSeries')
+                    : isAnime ? t('deleteTitleAnime') : t('deleteTitle');
+        const subtitle = isReadingMedia
+            ? t('deleteSubtitleReading')
+            : isMovie ? t('deleteSubtitleMovie')
+                : isSeries ? t('deleteSubtitleSeries')
+                    : isAnime ? t('deleteSubtitleAnime') : t('deleteSubtitle');
+        headerText.createEl('h2', { text: title });
+        headerText.createEl('p', { cls: 'lorebase-delete-subtitle', text: subtitle });
 
         // Game info
         const gameInfo = contentEl.createDiv({ cls: 'lorebase-delete-game-info' });
@@ -62,6 +74,8 @@ export class DeleteModal extends Modal {
         let statusLabel = statusLabels[this.item.status] ?? t('statusNotStarted');
         if (this.item.status === 'completed' && this.item.type === 'game') {
             statusLabel = t('statusPlayed');
+        } else if (isReadingMedia && this.item.status === 'completed') {
+            statusLabel = t('statusReadCompleted');
         } else if (isReadingMedia && this.item.status === 'planned') {
             statusLabel = t('statusPlanToRead');
         } else if (isReadingMedia && this.item.status === 'watching') {
@@ -86,8 +100,13 @@ export class DeleteModal extends Modal {
         });
         confirmCheckbox.setAttr('id', checkboxId);
 
+        const confirmText = isReadingMedia
+            ? t('deleteConfirmAckReading')
+            : isMovie ? t('deleteConfirmAckMovie')
+                : isSeries ? t('deleteConfirmAckSeries')
+                    : isAnime ? t('deleteConfirmAckAnime') : t('deleteConfirmAck');
         const confirmLabel = confirmRow.createEl('label', {
-            text: isReadingMedia ? t('deleteConfirmAckReading') : isWatchMedia ? t('deleteConfirmAckAnime') : t('deleteConfirmAck'),
+            text: confirmText,
             cls: 'lorebase-delete-confirm-label'
         });
         confirmLabel.setAttr('for', checkboxId);

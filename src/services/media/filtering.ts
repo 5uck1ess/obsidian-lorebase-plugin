@@ -1,19 +1,13 @@
-import { FilterState, MediaStatus, SortField, SortOrder, UserRating } from '../../types';
+import { FilterState, MediaStatus, SortField, SortOrder } from '../../types';
 import { compareNames, hasAllValues } from './serviceUtils';
+import {
+    FilterableMediaItem,
+    getViewFieldValue,
+    matchesFilterRule,
+    parseDateValue,
+} from './libraryViewState';
 
-export interface FilterableMediaItem {
-    displayName: string;
-    nameLower: string;
-    gameSeries?: string;
-    year: number | null;
-    userRating: UserRating;
-    favorite: boolean;
-    hasCustomPoster: boolean;
-    isAdult: boolean;
-    status: MediaStatus;
-    tags: string[];
-    genres: string[];
-}
+export type { FilterableMediaItem } from './libraryViewState';
 
 interface FilterAndSortOptions<T extends FilterableMediaItem> {
     items: T[];
@@ -36,7 +30,8 @@ export function filterAndSortMedia<T extends FilterableMediaItem>(
         || filter.favoriteOnly
         || filter.statuses.length > 0
         || filter.tags.length > 0
-        || filter.genres.length > 0;
+        || filter.genres.length > 0
+        || Boolean(filter.rules?.length);
 
     const statusSet = filter.statuses.length > 0 ? new Set<MediaStatus>(filter.statuses) : null;
     const selectedTags = filter.tags.length > 0 ? filter.tags : null;
@@ -53,6 +48,7 @@ export function filterAndSortMedia<T extends FilterableMediaItem>(
         if (filter.favoriteOnly && !item.favorite) continue;
         if (selectedTags && !hasAllValues(item.tags, selectedTags)) continue;
         if (selectedGenres && !hasAllValues(item.genres, selectedGenres)) continue;
+        if (filter.rules?.some((rule) => !matchesFilterRule(item, rule))) continue;
 
         result.push(item);
     }
@@ -68,18 +64,31 @@ function sortMediaItemsSafe<T extends FilterableMediaItem>(
 ): T[] {
     try {
         items.sort((a, b) => {
-            if (field === 'dateCompleted') {
-                const aDate = Number(getCompletedDate(a));
-                const bDate = Number(getCompletedDate(b));
-                const aValid = Number.isFinite(aDate) && aDate > 0;
-                const bValid = Number.isFinite(bDate) && bDate > 0;
+            if (field === 'dateCompleted' || field === 'dateFinished' || field === 'dateStarted' || field.startsWith('yaml:')) {
+                const aRaw = field === 'dateCompleted'
+                    ? getCompletedDate(a)
+                    : getViewFieldValue(a, field);
+                const bRaw = field === 'dateCompleted'
+                    ? getCompletedDate(b)
+                    : getViewFieldValue(b, field);
+                const yamlType = field.startsWith('yaml:') ? field.slice(5).split(':', 1)[0] : '';
+                const aValue = field === 'dateFinished' || field === 'dateStarted' || field === 'dateCompleted' || yamlType === 'date'
+                    ? parseDateValue(aRaw)
+                    : yamlType === 'number'
+                        ? normalizeNumber(aRaw)
+                    : normalizeComparable(aRaw);
+                const bValue = field === 'dateFinished' || field === 'dateStarted' || field === 'dateCompleted' || yamlType === 'date'
+                    ? parseDateValue(bRaw)
+                    : yamlType === 'number'
+                        ? normalizeNumber(bRaw)
+                    : normalizeComparable(bRaw);
 
-                if (!aValid && !bValid) return 0;
-                if (!aValid) return 1;
-                if (!bValid) return -1;
+                const missingComparison = compareMissing(aValue, bValue);
+                if (missingComparison !== null) return missingComparison;
 
-                const diff = aDate - bDate;
-                return order === 'asc' ? diff : -diff;
+                const comparison = compareComparable(aValue!, bValue!);
+                if (comparison !== 0) return order === 'asc' ? comparison : -comparison;
+                return compareStable(a, b);
             }
 
             let comparison = 0;
@@ -117,11 +126,46 @@ function sortMediaItemsSafe<T extends FilterableMediaItem>(
                     comparison = 0;
             }
 
-            return order === 'asc' ? comparison : -comparison;
+            if (comparison !== 0) return order === 'asc' ? comparison : -comparison;
+            return compareStable(a, b);
         });
     } catch (e) {
         console.error('Error during sorting:', e);
     }
 
     return items;
+}
+
+function normalizeComparable(value: unknown): string | number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    if (Array.isArray(value)) return value.length ? value.map(String).join('\u0000').toLocaleLowerCase() : null;
+    if (typeof value === 'string' && value.trim()) return value.trim().toLocaleLowerCase();
+    return null;
+}
+
+function normalizeNumber(value: unknown): number | null {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function compareMissing(
+    left: string | number | null,
+    right: string | number | null
+): number | null {
+    if (left === null && right === null) return 0;
+    if (left === null) return 1;
+    if (right === null) return -1;
+    return null;
+}
+
+function compareComparable(left: string | number, right: string | number): number {
+    if (typeof left === 'number' && typeof right === 'number') return left - right;
+    return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function compareStable(left: FilterableMediaItem, right: FilterableMediaItem): number {
+    const name = compareNames(left.nameLower || left.displayName, right.nameLower || right.displayName);
+    if (name !== 0) return name;
+    return String(left.filePath ?? '').localeCompare(String(right.filePath ?? ''));
 }

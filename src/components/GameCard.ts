@@ -5,7 +5,7 @@ import { requestUrl } from 'obsidian';
  * Matches original 2.0.txt card structure exactly
  */
 
-import { AnimeItem, BookItem, GameItem, MediaItem, CardSize, CardOrientation, CardStyle, SortField, LorebaseSettings, BadgePosition, MediaStatus, MangaItem, SeriesItem } from '../types';
+import { AnimeItem, BookItem, MediaItem, CardSize, CardOrientation, CardStyle, SortField, LorebaseSettings, BadgePosition, MediaStatus, MangaItem, SeriesItem, CompletionDateBadgeFormat } from '../types';
 import { t, i18n } from '../localization';
 import { STATUS_CONFIG, RATING_EMOJI, CARD_SIZES, DEFAULT_COVER, DEFAULT_SETTINGS, HORIZONTAL_CARD_SIZES } from '../constants';
 import {
@@ -36,11 +36,14 @@ export interface AnimeProgressVisibility {
     showEpisode: boolean;
 }
 
+type ImageUrlResolver = (value: string) => string | null;
+
 // =============================================================================
 // GAME CARD COMPONENT - Matching original exactly
 // =============================================================================
 
 export class GameCard {
+    private static instances = new WeakMap<HTMLElement, GameCard>();
     private container: HTMLElement;
     private game: MediaItem;
     private callbacks: CardCallbacks;
@@ -55,6 +58,8 @@ export class GameCard {
     private dimensionOverrides: CardDimensionOverrides | null;
     private animeProgressVisibility: AnimeProgressVisibility;
     private statusLabels: Partial<Record<MediaStatus, string>>;
+    private completionDateBadgeFormat: CompletionDateBadgeFormat;
+    private resolveImageUrl: ImageUrlResolver | null;
     private abortController: AbortController;
     private objectUrls: string[] = [];
 
@@ -89,7 +94,9 @@ export class GameCard {
         descriptionLines: number = 4,
         dimensionOverrides: CardDimensionOverrides | null = null,
         animeProgressVisibility: AnimeProgressVisibility = { showSeason: true, showEpisode: true },
-        statusLabels: Partial<Record<MediaStatus, string>> = {}
+        statusLabels: Partial<Record<MediaStatus, string>> = {},
+        completionDateBadgeFormat: CompletionDateBadgeFormat = 'short',
+        resolveImageUrl: ImageUrlResolver | null = null
     ) {
         this.game = game;
         this.callbacks = callbacks;
@@ -104,8 +111,11 @@ export class GameCard {
         this.dimensionOverrides = dimensionOverrides;
         this.animeProgressVisibility = animeProgressVisibility;
         this.statusLabels = statusLabels;
+        this.completionDateBadgeFormat = completionDateBadgeFormat;
+        this.resolveImageUrl = resolveImageUrl;
         this.abortController = new AbortController();
         this.container = parent.createDiv({ cls: 'lorebase-card' });
+        GameCard.instances.set(this.container, this);
         if (this.orientation === 'horizontal') {
             this.container.addClass('lorebase-card-horizontal');
         }
@@ -173,17 +183,16 @@ export class GameCard {
 
         const imageWrapper = imageContainer.createDiv({ cls: 'lorebase-card-image-wrapper' });
 
-        const imgSrc = isHorizontal
-            ? this.game.horizontalImageUrl
-            : (this.game.imageUrl || DEFAULT_COVER);
-        if (imgSrc) {
-            const imageCandidates = this.getImageCandidates(imgSrc, isHorizontal);
+        const imageCandidates = this.getCardImageCandidates(isHorizontal);
+        if (imageCandidates.length) {
             let imageCandidateIndex = 0;
             const img = imageWrapper.createEl('img', {
                 attr: {
                     src: '',
                     alt: this.game.displayName,
-                    loading: 'lazy'
+                    loading: 'lazy',
+                    decoding: 'async',
+                    fetchpriority: 'low',
                 }
             });
 
@@ -206,7 +215,7 @@ export class GameCard {
                     return;
                 }
 
-                img.src = next;
+                img.src = this.resolveImageCandidate(next);
             };
 
             img.addEventListener('error', () => {
@@ -239,6 +248,19 @@ export class GameCard {
         }, { signal });
     }
 
+    private getCardImageCandidates(isHorizontal: boolean): string[] {
+        const rawCandidates = isHorizontal
+            ? [this.game.horizontalImageUrl, this.game.imageUrl, this.game.poster]
+            : [this.game.imageUrl, this.game.poster, this.game.horizontalImageUrl];
+        const expanded: string[] = [];
+        for (const value of rawCandidates) {
+            if (!value || value === DEFAULT_COVER) continue;
+            expanded.push(...this.getImageCandidates(value, isHorizontal));
+        }
+        expanded.push(DEFAULT_COVER);
+        return Array.from(new Set(expanded.filter(Boolean)));
+    }
+
     private getImageCandidates(primary: string, isHorizontal: boolean): string[] {
         const appId = getSteamAppIdFromImageUrl(primary)
             || getSteamAppIdFromImageUrl(this.game.imageUrl || '')
@@ -257,6 +279,15 @@ export class GameCard {
         }
 
         return [primary].filter(Boolean);
+    }
+
+    private resolveImageCandidate(candidate: string): string {
+        if (this.isReadyImageUrl(candidate)) return candidate;
+        return this.resolveImageUrl?.(candidate) || DEFAULT_COVER;
+    }
+
+    private isReadyImageUrl(value: string): boolean {
+        return /^(https?:|app:|data:|blob:)/i.test(value);
     }
 
     private getMangaDexImageCandidates(primary: string): string[] {
@@ -345,16 +376,25 @@ export class GameCard {
         if (!progress) return;
 
         const badge = parent.createDiv({ cls: 'lorebase-card-metacritic' });
-        if (this.animeProgressVisibility.showSeason && progress.season) {
-            const season = badge.createSpan({ cls: 'lorebase-card-progress-season', text: progress.season });
-            const hasEpisodeBadge = this.animeProgressVisibility.showEpisode && Boolean(progress.ep);
-            if (hasEpisodeBadge) {
-                season.addClass('is-hover-only');
-            } else {
-                season.addClass('is-only');
+        const showSeason = this.animeProgressVisibility.showSeason && Boolean(progress.season);
+        const showEpisode = this.animeProgressVisibility.showEpisode && Boolean(progress.ep);
+
+        if (this.isBook(this.game)) {
+            if (showEpisode && progress.ep) {
+                badge.createSpan({ cls: 'lorebase-card-progress-ep', text: progress.ep });
             }
+            if (showSeason && progress.season) {
+                const chapter = badge.createSpan({ cls: 'lorebase-card-progress-season', text: progress.season });
+                chapter.addClass(showEpisode ? 'is-hover-only' : 'is-only');
+            }
+            return;
         }
-        if (this.animeProgressVisibility.showEpisode && progress.ep) {
+
+        if (showSeason && progress.season) {
+            const context = badge.createSpan({ cls: 'lorebase-card-progress-season', text: progress.season });
+            context.addClass(showEpisode ? 'is-hover-only' : 'is-only');
+        }
+        if (showEpisode && progress.ep) {
             badge.createSpan({ cls: 'lorebase-card-progress-ep', text: progress.ep });
         }
     }
@@ -409,7 +449,9 @@ export class GameCard {
         const config = STATUS_CONFIG[this.game.status];
         const isReadingMedia = this.game.type === 'book' || this.game.type === 'manga';
         const statusLabels: Record<string, string> = {
-            completed: this.game.type === 'game' ? t('statusPlayed') : t('statusCompleted'),
+            completed: this.game.type === 'game'
+                ? t('statusPlayed')
+                : isReadingMedia ? t('statusReadCompleted') : t('statusCompleted'),
             playing: t('statusPlaying'),
             dropped: t('statusDropped'),
             sandbox: t('statusSandbox'),
@@ -429,8 +471,7 @@ export class GameCard {
             ? overrideStatusText
             : statusLabels[this.game.status] || String(this.game.status);
         if (!this.badges.status.iconOnly && this.shouldShowCompletionDate()) {
-            const game = this.game as GameItem;
-            const formatted = this.formatCompletionDate(game.dateCompleted);
+            const formatted = this.formatFinishedDate(this.game.finished);
             if (formatted) {
                 statusText = `${statusText} | ${formatted}`;
             }
@@ -522,11 +563,8 @@ export class GameCard {
         _formatEl: HTMLElement | null,
         _descriptionEl: HTMLElement | null
     ): void {
-        // Removed: previously called getComputedStyle + getBoundingClientRect per card,
-        // causing forced reflow/layout thrashing. The overlay uses CSS-based layout;
-        // multi-line titles can be handled via CSS gap/flex instead of JS measurements.
-        // This is intentionally a no-op — the visual shift was minor and the perf cost
-        // was the #1 bottleneck in the entire plugin.
+        // Overlay positions are CSS-driven. Reading computed geometry for every
+        // visible card caused long animation-frame handlers and forced reflow.
     }
 
     private getOverlayPoint(field: 'title' | 'year' | 'format' | 'description'): { x: number; y: number } {
@@ -676,8 +714,8 @@ export class GameCard {
                 : null;
             if (!pageText && !chapterText) return null;
             return {
-                season: pageText,
-                ep: chapterText,
+                season: chapterText,
+                ep: pageText,
             };
         }
         if (this.isManga(item)) {
@@ -763,32 +801,59 @@ export class GameCard {
     }
 
     private shouldShowCompletionDate(): boolean {
-        const game = this.game;
-        if (game.type !== 'game') return false;
-        return this.sortField === 'dateCompleted'
-            && game.status === 'completed'
-            && Number.isFinite(game.dateCompleted || 0)
-            && (game.dateCompleted || 0) > 0;
+        return (this.sortField === 'dateCompleted' || this.sortField === 'dateFinished')
+            && this.game.status === 'completed'
+            && Boolean(this.getFinishedTimestamp(this.game.finished));
     }
 
-    private formatCompletionDate(timestamp: number | null): string | null {
+    private formatFinishedDate(value: string | null | undefined): string | null {
+        const timestamp = this.getFinishedTimestamp(value);
         if (!timestamp || !Number.isFinite(timestamp)) return null;
         const locale = i18n.getLanguage() === 'ru' ? 'ru-RU' : 'en-US';
+        const options: Intl.DateTimeFormatOptions = this.completionDateBadgeFormat === 'full'
+            ? { month: 'short', day: 'numeric', year: 'numeric' }
+            : { month: 'short', day: 'numeric' };
         try {
-            return new Intl.DateTimeFormat(locale, { month: 'short', year: 'numeric' }).format(new Date(timestamp));
+            return new Intl.DateTimeFormat(locale, options).format(new Date(timestamp));
         } catch {
-            return new Date(timestamp).toLocaleDateString(locale, { month: 'short', year: 'numeric' });
+            return new Date(timestamp).toLocaleDateString(locale, options);
         }
+    }
+
+    private getFinishedTimestamp(value: string | null | undefined): number | null {
+        if (!value) return null;
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        const parsed = Date.parse(trimmed);
+        return Number.isNaN(parsed) ? null : parsed;
     }
 
     getElement(): HTMLElement {
         return this.container;
     }
 
+    static refreshElement(element: HTMLElement, game: MediaItem): boolean {
+        const card = GameCard.instances.get(element);
+        if (!card) return false;
+        card.refresh(game);
+        return true;
+    }
+
+    private refresh(game: MediaItem): void {
+        this.abortController.abort();
+        for (const url of this.objectUrls) URL.revokeObjectURL(url);
+        this.objectUrls = [];
+        this.abortController = new AbortController();
+        this.game = game;
+        this.container.empty();
+        this.render();
+    }
+
     destroy(): void {
         this.abortController.abort();
         for (const url of this.objectUrls) URL.revokeObjectURL(url);
         this.objectUrls = [];
+        GameCard.instances.delete(this.container);
         if (this.container && this.container.parentElement) {
             this.container.remove();
         }

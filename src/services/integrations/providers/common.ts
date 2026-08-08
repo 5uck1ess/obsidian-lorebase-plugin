@@ -64,8 +64,8 @@ export function extractYear(value: string): string {
 export function pickAnimeTitle(title: unknown): string {
     const entry = asObject(title);
     return (
-        getString(entry, 'userPreferred')
-        || getString(entry, 'english')
+        getString(entry, 'english')
+        || getString(entry, 'userPreferred')
         || getString(entry, 'romaji')
         || getString(entry, 'native')
         || 'Unknown'

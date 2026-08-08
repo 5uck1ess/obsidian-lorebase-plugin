@@ -1,18 +1,26 @@
-import { App, Menu, Modal, TFile } from 'obsidian';
+import { App, Menu, Modal, setIcon, TFile } from 'obsidian';
 import { DEFAULT_COVER, STATUS_CONFIG } from '../constants';
 import { i18n, t } from '../localization';
 import { MovieItem, RelatedMediaLink, SeriesItem, UserRating, VideoPart, VideoStatus } from '../types';
 import { GenreEditModal } from './GenreEditModal';
+import { CommunityRatingRefresh, renderCommunityRatingPanel } from './CommunityRatingPanel';
+import { MediaSourceAction, renderMediaSourcePanel } from './MediaSourcePanel';
+import { setupMobileEditor } from './mobileEditor';
+import { bindSourceUrlButton } from './sourceUrlButton';
+import { extractMarkdownSection } from '../services/markdownSections';
+import { HierarchicalDatePicker, validateDatePickers } from './HierarchicalDatePicker';
 
 type VideoItem = MovieItem | SeriesItem;
 type VideoUpdates = Partial<VideoItem> & Record<string, unknown>;
 type PartDraft = VideoPart;
 type RelatedCandidate = RelatedMediaLink;
+type NotesMode = 'description' | 'myNotes';
 
 export class VideoEditModal extends Modal {
     private item: VideoItem;
     private onSave: (updates: VideoUpdates) => Promise<void>;
     private onDelete: () => void;
+    private onRefreshCommunityRating?: CommunityRatingRefresh;
 
     private title: string;
     private poster: string;
@@ -22,10 +30,14 @@ export class VideoEditModal extends Modal {
     private selectedRating: UserRating;
     private favorite: boolean;
     private summary: string;
+    private myNotes = '';
+    private notesMode: NotesMode = 'description';
+    private notesExpanded = false;
+    private started: string;
+    private finished: string;
     private sourceUrl: string;
     private genres: string[];
     private tags: string[];
-    private providerRating: string;
 
     private releaseDate: string;
     private runtime: string;
@@ -40,6 +52,9 @@ export class VideoEditModal extends Modal {
     private relatedCandidates: RelatedCandidate[];
     private incomingRelated: RelatedMediaLink[];
     private draggedRelatedPath: string | null = null;
+    private startedDatePicker?: HierarchicalDatePicker;
+    private finishedDatePicker?: HierarchicalDatePicker;
+    private releaseDatePicker?: HierarchicalDatePicker;
 
     private onKeydown = (event: KeyboardEvent): void => {
         if (event.key === 'Escape') {
@@ -58,13 +73,17 @@ export class VideoEditModal extends Modal {
         item: VideoItem,
         onSave: (updates: VideoUpdates) => Promise<void>,
         onDelete: () => void,
+        onRefreshCommunityRating?: CommunityRatingRefresh,
         incomingRelated: RelatedMediaLink[] = [],
-        relatedCandidates: RelatedCandidate[] = []
+        relatedCandidates: RelatedCandidate[] = [],
+        private readonly onRefreshSource?: MediaSourceAction,
+        private readonly onChangeSource?: MediaSourceAction
     ) {
         super(app);
         this.item = item;
         this.onSave = onSave;
         this.onDelete = onDelete;
+        this.onRefreshCommunityRating = onRefreshCommunityRating;
 
         this.title = item.displayName;
         this.poster = item.imageUrl;
@@ -74,12 +93,13 @@ export class VideoEditModal extends Modal {
         this.selectedRating = item.userRating;
         this.favorite = item.favorite;
         this.summary = item.summary || item.description || '';
+        this.started = this.normalizeDateInput(item.started);
+        this.finished = this.normalizeDateInput(item.finished);
         this.sourceUrl = item.sourceUrl ?? '';
         this.genres = this.normalizeList(item.genres ?? []);
         this.tags = this.normalizeList(item.tags ?? []);
-        this.providerRating = item.rating ?? '';
 
-        this.releaseDate = item.releaseDate ?? '';
+        this.releaseDate = this.normalizeDateInput(item.releaseDate);
         this.runtime = item.runtime ?? '';
         this.director = item.director ?? '';
         this.actors = item.actors ?? '';
@@ -105,22 +125,36 @@ export class VideoEditModal extends Modal {
 
         const root = contentEl.createDiv({ cls: 'lorebase-editmode-root lorebase-editmode-video-root lorebase-modal-panel' });
         root.appendChild(this.createTemplateFragment(this.buildTemplate()));
-
         this.bindStaticContent(root);
         this.bindHeader(root);
         this.bindQuickSettings(root);
         this.bindStatus(root);
         this.bindRating(root);
         this.bindFields(root);
+        bindSourceUrlButton(root);
         this.bindParts(root);
+        this.bindNotesDisclosure(root);
+        this.bindPlayDates(root);
         this.bindNotes(root);
+        void this.loadMyNotes(root);
         this.bindTags(root);
         this.bindRelatedMedia(root);
         this.renderRelatedMedia(root);
         this.bindDates(root);
+        if (this.onRefreshCommunityRating) {
+            renderCommunityRatingPanel(root, this.item, this.onRefreshCommunityRating);
+        }
+        renderMediaSourcePanel(root, this.item, this.onRefreshSource, this.onChangeSource);
+        setupMobileEditor(root, () => void this.save());
     }
 
     onClose(): void {
+        this.startedDatePicker?.destroy();
+        this.finishedDatePicker?.destroy();
+        this.releaseDatePicker?.destroy();
+        this.startedDatePicker = undefined;
+        this.finishedDatePicker = undefined;
+        this.releaseDatePicker = undefined;
         this.modalEl.removeEventListener('keydown', this.onKeydown);
         this.contentEl.empty();
         this.modalEl.removeClass('lorebase-editmode-modal-shell');
@@ -158,7 +192,7 @@ export class VideoEditModal extends Modal {
                             <div class="lorebase-editmode-toggle-list">
                                 <label class="lorebase-editmode-switch-row">
                                     <span class="lorebase-editmode-switch-label">${t('editFavorite')}</span>
-                                    <button type="button" class="lorebase-editmode-switch" data-toggle="favorite" aria-pressed="false"><span class="lorebase-editmode-switch-thumb"></span></button>
+                                    <button type="button" class="lorebase-editmode-switch lorebase-editmode-switch-favorite" data-toggle="favorite" aria-label="${t('editFavorite')}" aria-pressed="false"><span class="lorebase-editmode-switch-thumb"></span></button>
                                 </label>
                             </div>
                         </section>
@@ -174,17 +208,32 @@ export class VideoEditModal extends Modal {
                                     <span class="lorebase-editmode-field-label">${t('year')}</span>
                                     <input class="lorebase-editmode-input" data-field="year" type="number" inputmode="numeric" placeholder="2026" />
                                 </label>
-                                <label class="lorebase-editmode-field">
-                                    <span class="lorebase-editmode-field-label">${t('templateFieldRating')}</span>
-                                    <input class="lorebase-editmode-input" data-field="provider-rating" type="text" />
-                                </label>
-                                <label class="lorebase-editmode-field is-wide">
-                                    <span class="lorebase-editmode-field-label">${t('editUrl')}</span>
-                                    <input class="lorebase-editmode-input" data-field="source-url" type="text" placeholder="https://..." />
-                                </label>
                             </div>
                             <div class="lorebase-editmode-field lorebase-editmode-genres-field">
                                 <div class="lorebase-editmode-chip-row" data-role="genre-chips"></div>
+                                <div class="lorebase-editmode-title-meta-actions">
+                                    <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-ghost lorebase-editmode-notes-toggle" data-action="toggle-notes" aria-expanded="false">
+                                        <span class="lorebase-editmode-notes-toggle-icon" data-role="notes-toggle-icon"></span>
+                                        <span>${t('editDescription')}</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="lorebase-editmode-panel lorebase-editmode-panel-glass lorebase-editmode-notes is-collapsed" data-component="NotesEditor">
+                            <div class="lorebase-editmode-panel-title-row">
+                                <h3 class="lorebase-editmode-panel-title" data-role="notes-title">${t('editDescription')}</h3>
+                                <div class="lorebase-editmode-note-tabs" role="tablist">
+                                    <button type="button" class="lorebase-editmode-note-tab is-active" data-mode="description">${t('editDescription')}</button>
+                                    <button type="button" class="lorebase-editmode-note-tab" data-mode="myNotes">${t('editMyNotes')}</button>
+                                </div>
+                            </div>
+                            <div class="lorebase-editmode-notes-shell">
+                                <textarea class="lorebase-editmode-notes-input" data-field="summary" rows="9"></textarea>
+                            </div>
+                            <div class="lorebase-editmode-notes-footer">
+                                <span class="lorebase-editmode-saved-indicator" data-role="saved-indicator">${t('editSaved')}</span>
+                                <span class="lorebase-editmode-char-count" data-role="char-count">0 ${t('editCharsShort')}</span>
                             </div>
                         </section>
 
@@ -208,6 +257,28 @@ export class VideoEditModal extends Modal {
                                 </div>
                                 <div class="lorebase-editmode-rating-line"><span class="lorebase-editmode-rating-line-fill" data-role="rating-line"></span></div>
                             </div>
+                            <div class="lorebase-editmode-play-dates">
+                                <label class="lorebase-editmode-date-field">
+                                    <span class="lorebase-editmode-field-label">${t('editStarted')}</span>
+                                    <div class="lorebase-editmode-date-input-row">
+                                        <div class="lorebase-editmode-date-control">
+                                            <button type="button" class="lorebase-editmode-date-control-icon" data-action="open-started-calendar" title="${t('editStarted')}" aria-label="${t('editStarted')}"></button>
+                                            <input class="lorebase-editmode-input" data-field="started-date" type="text" inputmode="numeric" maxlength="10" />
+                                        </div>
+                                        <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-ghost lorebase-editmode-btn-tiny" data-action="today-started">${t('editToday')}</button>
+                                    </div>
+                                </label>
+                                <label class="lorebase-editmode-date-field">
+                                    <span class="lorebase-editmode-field-label">${t('editFinished')}</span>
+                                    <div class="lorebase-editmode-date-input-row">
+                                        <div class="lorebase-editmode-date-control">
+                                            <button type="button" class="lorebase-editmode-date-control-icon" data-action="open-finished-calendar" title="${t('editFinished')}" aria-label="${t('editFinished')}"></button>
+                                            <input class="lorebase-editmode-input" data-field="finished-date" type="text" inputmode="numeric" maxlength="10" />
+                                        </div>
+                                        <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-ghost lorebase-editmode-btn-tiny" data-action="today-finished">${t('editToday')}</button>
+                                    </div>
+                                </label>
+                            </div>
                         </section>
 
                         ${this.buildPartsSection()}
@@ -220,21 +291,9 @@ export class VideoEditModal extends Modal {
                             <div class="lorebase-editmode-related-list" data-role="related-media"></div>
                         </section>
 
-                        <section class="lorebase-editmode-panel lorebase-editmode-panel-glass lorebase-editmode-notes">
-                            <div class="lorebase-editmode-panel-title-row"><h3 class="lorebase-editmode-panel-title">${t('editSummary')}</h3></div>
-                            <div class="lorebase-editmode-notes-shell">
-                                <textarea class="lorebase-editmode-notes-input" data-field="summary" rows="9"></textarea>
-                            </div>
-                            <div class="lorebase-editmode-notes-footer">
-                                <span class="lorebase-editmode-saved-indicator" data-role="saved-indicator">${t('editSaved')}</span>
-                                <span class="lorebase-editmode-char-count" data-role="char-count">0 ${t('editCharsShort')}</span>
-                            </div>
-                        </section>
                     </main>
 
                     <aside class="lorebase-editmode-column lorebase-editmode-column-right">
-                        ${this.buildProgressPanel()}
-
                         ${this.buildAdditionalPanel()}
 
                         <section class="lorebase-editmode-panel lorebase-editmode-tags">
@@ -259,47 +318,56 @@ export class VideoEditModal extends Modal {
     private buildPartsSection(): string {
         if (this.item.type === 'movie') return '';
         return `
-            <section class="lorebase-editmode-panel lorebase-editmode-panel-glass lorebase-editmode-anime-parts">
+            <section class="lorebase-editmode-panel lorebase-editmode-panel-glass lorebase-editmode-anime-parts lorebase-editmode-series-parts">
                 <div class="lorebase-editmode-panel-title-row">
                     <h3 class="lorebase-editmode-panel-title">${t('templateFieldSeriesParts')}</h3>
-                    <div class="lorebase-editmode-part-actions">
-                        <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-tight" data-action="remove-part">${t('editRemovePart')}</button>
-                        <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-tight" data-action="add-part">${t('editAddPart')}</button>
+                </div>
+                <div class="lorebase-editmode-anime-parts-navigation">
+                    <div class="lorebase-editmode-chip-row lorebase-editmode-part-strip" data-role="part-strip"></div>
+                    <div class="lorebase-editmode-anime-part-inline-actions">
+                        <button type="button" class="lorebase-editmode-anime-parts-icon-action" data-action="add-part" aria-label="${t('editAddPart')}"></button>
+                        <button type="button" class="lorebase-editmode-anime-parts-icon-action is-danger" data-action="remove-part" aria-label="${t('editRemovePart')}"></button>
                     </div>
                 </div>
-                <div class="lorebase-editmode-chip-row lorebase-editmode-part-strip" data-role="part-strip"></div>
+                <div class="lorebase-editmode-anime-part-summary">
+                    <div class="lorebase-editmode-anime-part-stat">
+                        <span class="lorebase-editmode-anime-part-stat-label">${t('editTotalEpisodes')}</span>
+                        <strong class="lorebase-editmode-anime-part-stat-value" data-role="progress-total">-</strong>
+                    </div>
+                    <div class="lorebase-editmode-anime-part-stat">
+                        <span class="lorebase-editmode-anime-part-stat-label">${t('editActivePart')}</span>
+                        <strong class="lorebase-editmode-anime-part-stat-value" data-role="active-part-name">-</strong>
+                    </div>
+                </div>
                 <div class="lorebase-editmode-anime-part-editor" data-role="part-editor">
-                    <div class="lorebase-editmode-meta-row">
-                        <label class="lorebase-editmode-field">
+                    <div class="lorebase-editmode-anime-part-identity-row">
+                        <label class="lorebase-editmode-field lorebase-editmode-anime-part-title-field">
                             <span class="lorebase-editmode-field-label">${t('templateFieldName')}</span>
                             <input class="lorebase-editmode-input" data-field="part-title" type="text" />
                         </label>
-                        <label class="lorebase-editmode-field">
-                            <span class="lorebase-editmode-field-label">${t('editSeasonCurrent')}</span>
-                            <input class="lorebase-editmode-input" data-field="part-season" type="number" inputmode="numeric" />
-                        </label>
+                        <div class="lorebase-editmode-anime-part-meta-rail">
+                            <label class="lorebase-editmode-field lorebase-editmode-anime-part-meta-field lorebase-editmode-anime-part-season-field">
+                                <span class="lorebase-editmode-field-label">${t('editSeasonCurrent')}</span>
+                                <input class="lorebase-editmode-input" data-field="part-season" type="number" inputmode="numeric" />
+                            </label>
+                            <div class="lorebase-editmode-field lorebase-editmode-anime-part-meta-field lorebase-editmode-anime-episodes-field">
+                                <span class="lorebase-editmode-field-label">${t('editEpisodes')}</span>
+                                <div class="lorebase-editmode-anime-episode-stepper">
+                                    <button type="button" class="lorebase-editmode-anime-stepper-button" data-action="episode-dec" aria-label="${t('editEpisodeCurrent')}">−</button>
+                                    <input class="lorebase-editmode-input lorebase-editmode-anime-stepper-input" data-field="part-episode-current" type="number" inputmode="numeric" aria-label="${t('editEpisodeCurrent')}" />
+                                    <span class="lorebase-editmode-anime-slash">/</span>
+                                    <input class="lorebase-editmode-input lorebase-editmode-anime-stepper-input" data-field="part-episode-total" type="number" inputmode="numeric" aria-label="${t('editEpisodeTotal')}" />
+                                    <button type="button" class="lorebase-editmode-anime-stepper-button" data-action="episode-inc" aria-label="${t('editEpisodeInc')}">+</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="lorebase-editmode-anime-episode-row">
-                        <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-tight" data-action="episode-dec">-</button>
-                        <input class="lorebase-editmode-input" data-field="part-episode-current" type="number" inputmode="numeric" />
-                        <span class="lorebase-editmode-anime-slash">/</span>
-                        <input class="lorebase-editmode-input" data-field="part-episode-total" type="number" inputmode="numeric" />
-                        <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-tight" data-action="episode-inc">+1</button>
+                    <div class="lorebase-editmode-anime-part-tracking-row">
+                        <div class="lorebase-editmode-anime-part-status-field">
+                            <span class="lorebase-editmode-field-label">${t('editStatus')}</span>
+                            <div class="lorebase-editmode-segmented lorebase-editmode-part-status" data-role="part-status-segments"></div>
+                        </div>
                     </div>
-                    <div class="lorebase-editmode-segmented lorebase-editmode-part-status" data-role="part-status-segments"></div>
-                </div>
-            </section>
-        `;
-    }
-
-    private buildProgressPanel(): string {
-        if (this.item.type === 'movie') return '';
-        return `
-            <section class="lorebase-editmode-panel lorebase-editmode-panel-glass">
-                <div class="lorebase-editmode-panel-title-row"><h3 class="lorebase-editmode-panel-title">${t('editProgress')}</h3></div>
-                <div class="lorebase-editmode-kv-list">
-                    <div class="lorebase-editmode-kv-row"><span class="lorebase-editmode-kv-key">${t('editTotalEpisodes')}</span><span class="lorebase-editmode-kv-val" data-role="progress-total">-</span></div>
-                    <div class="lorebase-editmode-kv-row"><span class="lorebase-editmode-kv-key">${t('editActivePart')}</span><span class="lorebase-editmode-kv-val" data-role="active-part-name">-</span></div>
                 </div>
             </section>
         `;
@@ -324,19 +392,31 @@ export class VideoEditModal extends Modal {
 
     private buildMovieAdditionalFields(): string {
         return `
-            <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldReleased')}</span><input class="lorebase-editmode-input" data-field="released" type="text" /></label>
+            ${this.buildReleaseDateField()}
             <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldRuntime')}</span><input class="lorebase-editmode-input" data-field="runtime" type="text" /></label>
-            <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldDirector')}</span><input class="lorebase-editmode-input" data-field="director" type="text" /></label>
-            <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldActors')}</span><input class="lorebase-editmode-input" data-field="actors" type="text" /></label>
+            <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldDirector')}</span><input class="lorebase-editmode-input" data-field="director" type="text" placeholder="Director A, Director B" /></label>
+            <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldActors')}</span><input class="lorebase-editmode-input" data-field="actors" type="text" placeholder="Actor A, Actor B" /></label>
         `;
     }
 
     private buildSeriesAdditionalFields(): string {
         return `
-            <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldReleased')}</span><input class="lorebase-editmode-input" data-field="released" type="text" /></label>
+            ${this.buildReleaseDateField()}
             <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldRuntime')}</span><input class="lorebase-editmode-input" data-field="runtime" type="text" /></label>
-            <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldDirector')}</span><input class="lorebase-editmode-input" data-field="director" type="text" /></label>
-            <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldActors')}</span><input class="lorebase-editmode-input" data-field="actors" type="text" /></label>
+            <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldDirector')}</span><input class="lorebase-editmode-input" data-field="director" type="text" placeholder="Director A, Director B" /></label>
+            <label class="lorebase-editmode-field"><span class="lorebase-editmode-field-label">${t('templateFieldActors')}</span><input class="lorebase-editmode-input" data-field="actors" type="text" placeholder="Actor A, Actor B" /></label>
+        `;
+    }
+
+    private buildReleaseDateField(): string {
+        return `
+            <label class="lorebase-editmode-date-field">
+                <span class="lorebase-editmode-field-label">${t('templateFieldReleased')}</span>
+                <div class="lorebase-editmode-date-control">
+                    <button type="button" class="lorebase-editmode-date-control-icon" data-action="open-release-calendar" data-role="release-date-icon" title="${t('templateFieldReleased')}" aria-label="${t('templateFieldReleased')}"></button>
+                    <input class="lorebase-editmode-input" data-field="released" type="text" inputmode="numeric" maxlength="10" />
+                </div>
+            </label>
         `;
     }
 
@@ -358,9 +438,10 @@ export class VideoEditModal extends Modal {
         }
         this.setInput(root, '[data-field="title"]', this.title);
         this.setInput(root, '[data-field="year"]', this.year);
-        this.setInput(root, '[data-field="provider-rating"]', this.providerRating);
         this.setInput(root, '[data-field="source-url"]', this.sourceUrl);
-        this.setInput(root, '[data-field="summary"]', this.summary);
+        this.setInput(root, '[data-field="summary"]', this.getCurrentNotesValue());
+        this.setInput(root, '[data-field="started-date"]', this.started);
+        this.setInput(root, '[data-field="finished-date"]', this.finished);
         this.setInput(root, '[data-field="released"]', this.releaseDate);
         this.setInput(root, '[data-field="runtime"]', this.runtime);
         this.setInput(root, '[data-field="director"]', this.director);
@@ -384,6 +465,8 @@ export class VideoEditModal extends Modal {
         this.updatePartStatusUI(root);
         this.updateProgressSummary(root);
         this.updateCharCount(root);
+        this.updateNotesDisclosureUI(root);
+        this.updateNotesModeUI(root);
     }
 
     private bindHeader(root: HTMLElement): void {
@@ -413,6 +496,10 @@ export class VideoEditModal extends Modal {
                 const status = btn.dataset.status as VideoStatus | undefined;
                 if (!status) return;
                 this.selectedStatus = status;
+                if (status === 'completed' && !this.finished) {
+                    this.finished = this.getTodayDateInput();
+                    this.finishedDatePicker?.syncInput(this.finished);
+                }
                 this.updateStatusUI(root);
             });
         });
@@ -433,9 +520,7 @@ export class VideoEditModal extends Modal {
 
     private bindFields(root: HTMLElement): void {
         this.bindText(root, '[data-field="title"]', (value) => { this.title = value || this.item.displayName; });
-        this.bindText(root, '[data-field="provider-rating"]', (value) => { this.providerRating = value; });
         this.bindText(root, '[data-field="source-url"]', (value) => { this.sourceUrl = value; });
-        this.bindText(root, '[data-field="released"]', (value) => { this.releaseDate = value; });
         this.bindText(root, '[data-field="runtime"]', (value) => { this.runtime = value; });
         this.bindText(root, '[data-field="director"]', (value) => { this.director = value; });
         this.bindText(root, '[data-field="actors"]', (value) => { this.actors = value; });
@@ -450,7 +535,12 @@ export class VideoEditModal extends Modal {
     }
 
     private bindParts(root: HTMLElement): void {
-        this.qs<HTMLButtonElement>(root, '[data-action="add-part"]')?.addEventListener('click', () => {
+        const addPartButton = this.qs<HTMLButtonElement>(root, '[data-action="add-part"]');
+        const removePartButton = this.qs<HTMLButtonElement>(root, '[data-action="remove-part"]');
+        if (addPartButton) setIcon(addPartButton, 'plus');
+        if (removePartButton) setIcon(removePartButton, 'trash-2');
+
+        addPartButton?.addEventListener('click', () => {
             const index = this.parts.length + 1;
             const kind = this.item.type === 'series' ? 'season' : 'movie';
             const part: PartDraft = {
@@ -467,7 +557,7 @@ export class VideoEditModal extends Modal {
             this.refreshPartsUi(root);
         });
 
-        this.qs<HTMLButtonElement>(root, '[data-action="remove-part"]')?.addEventListener('click', () => {
+        removePartButton?.addEventListener('click', () => {
             if (this.parts.length <= 1) return;
             const active = this.getActivePart();
             if (!active) return;
@@ -510,13 +600,104 @@ export class VideoEditModal extends Modal {
         });
     }
 
+    private bindNotesDisclosure(root: HTMLElement): void {
+        const button = this.qs<HTMLButtonElement>(root, '[data-action="toggle-notes"]');
+        button?.addEventListener('click', () => {
+            this.notesExpanded = !this.notesExpanded;
+            this.updateNotesDisclosureUI(root);
+            if (this.notesExpanded) {
+                window.setTimeout(() => this.qs<HTMLTextAreaElement>(root, '[data-field="summary"]')?.focus(), 0);
+            }
+        });
+    }
+
+    private bindPlayDates(root: HTMLElement): void {
+        const started = this.qs<HTMLInputElement>(root, '[data-field="started-date"]');
+        const finished = this.qs<HTMLInputElement>(root, '[data-field="finished-date"]');
+        const released = this.qs<HTMLInputElement>(root, '[data-field="released"]');
+        const startedTrigger = this.qs<HTMLButtonElement>(root, '[data-action="open-started-calendar"]');
+        const finishedTrigger = this.qs<HTMLButtonElement>(root, '[data-action="open-finished-calendar"]');
+        const releasedTrigger = this.qs<HTMLButtonElement>(root, '[data-action="open-release-calendar"]');
+
+        if (started && startedTrigger) {
+            setIcon(startedTrigger, 'calendar-days');
+            this.startedDatePicker = new HierarchicalDatePicker(
+                started,
+                startedTrigger,
+                () => this.started,
+                (value) => { this.started = value; }
+            );
+            this.startedDatePicker.syncInput(this.started);
+        }
+
+        if (finished && finishedTrigger) {
+            setIcon(finishedTrigger, 'calendar-days');
+            this.finishedDatePicker = new HierarchicalDatePicker(
+                finished,
+                finishedTrigger,
+                () => this.finished,
+                (value) => { this.finished = value; }
+            );
+            this.finishedDatePicker.syncInput(this.finished);
+        }
+
+        if (released && releasedTrigger) {
+            setIcon(releasedTrigger, 'calendar-days');
+            this.releaseDatePicker = new HierarchicalDatePicker(
+                released,
+                releasedTrigger,
+                () => this.releaseDate,
+                (value) => { this.releaseDate = value; }
+            );
+            this.releaseDatePicker.syncInput(this.releaseDate);
+        }
+
+        this.qs<HTMLButtonElement>(root, '[data-action="today-started"]')?.addEventListener('click', () => {
+            this.started = this.getTodayDateInput();
+            this.startedDatePicker?.syncInput(this.started);
+        });
+
+        this.qs<HTMLButtonElement>(root, '[data-action="today-finished"]')?.addEventListener('click', () => {
+            this.finished = this.getTodayDateInput();
+            this.finishedDatePicker?.syncInput(this.finished);
+        });
+    }
+
     private bindNotes(root: HTMLElement): void {
         const summary = this.qs<HTMLTextAreaElement>(root, '[data-field="summary"]');
         summary?.addEventListener('input', () => {
-            this.summary = summary.value;
+            if (this.notesMode === 'description') this.summary = summary.value;
+            else this.myNotes = summary.value;
             this.setText(root, '[data-role="saved-indicator"]', t('editUnsavedChanges'));
             this.updateCharCount(root);
         });
+
+        root.querySelectorAll<HTMLButtonElement>('.lorebase-editmode-note-tab').forEach((button) => {
+            button.addEventListener('click', () => {
+                const mode = button.dataset.mode === 'myNotes' ? 'myNotes' : 'description';
+                if (mode === this.notesMode) return;
+                this.notesMode = mode;
+                if (summary) summary.value = this.getCurrentNotesValue();
+                this.updateNotesModeUI(root);
+                this.updateCharCount(root);
+            });
+        });
+    }
+
+    private async loadMyNotes(root: HTMLElement): Promise<void> {
+        const file = this.getFile();
+        if (!file) return;
+        try {
+            const content = await this.app.vault.read(file);
+            this.myNotes = extractMarkdownSection(content);
+            if (this.notesMode === 'myNotes') {
+                const summary = this.qs<HTMLTextAreaElement>(root, '[data-field="summary"]');
+                if (summary) summary.value = this.myNotes;
+                this.updateCharCount(root);
+            }
+        } catch (error) {
+            console.warn('[LOREBASE] Failed to load My Notes section.', error);
+        }
     }
 
     private bindTags(root: HTMLElement): void {
@@ -792,14 +973,6 @@ export class VideoEditModal extends Modal {
         this.relatedMedia = this.normalizeRelatedMedia(next);
     }
 
-    private moveRelatedMedia(index: number, direction: -1 | 1): void {
-        const target = index + direction;
-        if (target < 0 || target >= this.relatedMedia.length) return;
-        const next = [...this.relatedMedia];
-        [next[index], next[target]] = [next[target], next[index]];
-        this.relatedMedia = next;
-    }
-
     private normalizeRelatedMedia(values: RelatedMediaLink[]): RelatedMediaLink[] {
         const unique = new Map<string, RelatedMediaLink>();
         for (const value of values) {
@@ -822,29 +995,6 @@ export class VideoEditModal extends Modal {
         if (type === 'book') return t('settingsBooks');
         if (type === 'manga') return t('settingsManga');
         return t('settingsGames');
-    }
-
-    private renderIncomingRelated(root: HTMLElement): void {
-        const container = this.qs<HTMLElement>(root, '[data-role="incoming-related-media"]');
-        if (!container) return;
-        container.empty();
-        if (!this.incomingRelated.length) {
-            container.createDiv({ cls: 'lorebase-editmode-related-empty', text: t('editRelatedEmpty') });
-            return;
-        }
-
-        for (const item of this.incomingRelated) {
-            const row = container.createDiv({ cls: 'lorebase-editmode-related-item is-readonly' });
-            const image = row.createDiv({ cls: 'lorebase-editmode-related-image' });
-            const imageUrl = item.imageUrl || DEFAULT_COVER;
-            image.setCssStyles({
-                backgroundImage: `url("${imageUrl.replace(/"/g, '\\"')}")`,
-                height: '76px',
-                minHeight: '76px',
-            });
-            image.createSpan({ cls: 'lorebase-editmode-related-type', text: this.getRelatedTypeLabel(item.type) });
-            row.createSpan({ cls: 'lorebase-editmode-related-title', text: item.title || item.path });
-        }
     }
 
     private renderChipList(root: HTMLElement, selector: string, values: string[], onRemove: (value: string) => void, prefix = ''): void {
@@ -913,7 +1063,35 @@ export class VideoEditModal extends Modal {
     }
 
     private updateCharCount(root: HTMLElement): void {
-        this.setText(root, '[data-role="char-count"]', `${this.summary.length} ${t('editCharsShort')}`);
+        this.setText(root, '[data-role="char-count"]', `${this.getCurrentNotesValue().length} ${t('editCharsShort')}`);
+    }
+
+    private getCurrentNotesValue(): string {
+        return this.notesMode === 'description' ? this.summary : this.myNotes;
+    }
+
+    private updateNotesModeUI(root: HTMLElement): void {
+        root.querySelectorAll<HTMLButtonElement>('.lorebase-editmode-note-tab').forEach((button) => {
+            const mode = button.dataset.mode === 'myNotes' ? 'myNotes' : 'description';
+            button.toggleClass('is-active', mode === this.notesMode);
+        });
+        const title = this.qs<HTMLElement>(root, '[data-role="notes-title"]');
+        if (title) title.textContent = this.notesMode === 'description' ? t('editDescription') : t('editMyNotes');
+    }
+
+    private updateNotesDisclosureUI(root: HTMLElement): void {
+        const panel = this.qs<HTMLElement>(root, '[data-component="NotesEditor"]');
+        panel?.toggleClass('is-collapsed', !this.notesExpanded);
+        const button = this.qs<HTMLButtonElement>(root, '[data-action="toggle-notes"]');
+        if (button) {
+            button.setAttr('aria-expanded', String(this.notesExpanded));
+            button.toggleClass('is-active', this.notesExpanded);
+        }
+        const icon = this.qs<HTMLElement>(root, '[data-role="notes-toggle-icon"]');
+        if (icon) {
+            icon.empty();
+            setIcon(icon, this.notesExpanded ? 'chevron-up' : 'chevron-down');
+        }
     }
 
     private refreshPartsUi(root: HTMLElement): void {
@@ -1073,12 +1251,38 @@ export class VideoEditModal extends Modal {
         return new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'short', day: '2-digit' }).format(new Date(timestamp));
     }
 
+    private normalizeDateInput(value: string | null | undefined): string {
+        const trimmed = String(value ?? '').trim();
+        if (!trimmed) return '';
+        if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+        const parsed = Date.parse(trimmed);
+        if (Number.isNaN(parsed)) return '';
+        const date = new Date(parsed);
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    private getTodayDateInput(): string {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
     private getFile(): TFile | null {
         const file = this.app.vault.getAbstractFileByPath(this.item.filePath);
         return file instanceof TFile ? file : null;
     }
 
-    private async save(): Promise<void> {
+    async saveBeforeSourceRefresh(): Promise<boolean> {
+        return this.save();
+    }
+
+    private async save(): Promise<boolean> {
+        if (!validateDatePickers([this.startedDatePicker, this.finishedDatePicker, this.releaseDatePicker].filter((picker): picker is HierarchicalDatePicker => Boolean(picker)))) return false;
         const activePart = this.getActivePart();
         const allPartsCompleted = this.item.type === 'series' && this.parts.length > 0 && this.parts.every((part) => part.status === 'completed');
         const status = allPartsCompleted ? 'completed' : this.selectedStatus;
@@ -1094,9 +1298,11 @@ export class VideoEditModal extends Modal {
             summary: this.summary,
             genres: this.genres,
             tags: this.tags,
-            rating: this.providerRating,
             sourceUrl: this.sourceUrl || null,
+            started: this.started || null,
+            finished: this.finished || null,
             relatedMedia: this.relatedMedia,
+            myNotes: this.myNotes,
         };
 
         if (this.item.type === 'movie') {
@@ -1120,6 +1326,7 @@ export class VideoEditModal extends Modal {
 
         await this.onSave(updates);
         this.close();
+        return true;
     }
 }
 
@@ -1159,6 +1366,7 @@ class RelatedMediaPickerModal extends Modal {
 
         const filters = contentEl.createDiv({ cls: 'lorebase-related-picker-filters' });
         const filterOptions: Array<{ value: RelatedMediaLink['type']; label: string }> = [
+            { value: 'game', label: t('settingsGames') },
             { value: 'anime', label: t('settingsAnime') },
             { value: 'movie', label: t('settingsMovies') },
             { value: 'series', label: t('settingsSeries') },

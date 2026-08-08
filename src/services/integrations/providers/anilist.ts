@@ -86,7 +86,11 @@ export async function searchAniList(
     return withHasNext(mapped, Boolean(pageInfo?.hasNextPage));
 }
 
-export async function getAniListDetails(fetchJson: JsonFetcher, id: string): Promise<AnimeDetails | null> {
+export async function getAniListDetails(
+    fetchJson: JsonFetcher,
+    id: string,
+    options: { includeParts?: boolean } = {}
+): Promise<AnimeDetails | null> {
     const numericId = Number.parseInt(id, 10);
     if (!Number.isFinite(numericId)) return null;
 
@@ -111,6 +115,11 @@ export async function getAniListDetails(fetchJson: JsonFetcher, id: string): Pro
       year
     }
     averageScore
+    stats {
+      scoreDistribution {
+        amount
+      }
+    }
     siteUrl
     format
     coverImage {
@@ -171,7 +180,7 @@ export async function getAniListDetails(fetchJson: JsonFetcher, id: string): Pro
     const startDate = getObject(item, 'startDate');
     const coverImage = getObject(item, 'coverImage');
     const image = getString(coverImage, 'extraLarge') || getString(coverImage, 'large');
-    const parts = await getAniListRelatedParts(fetchJson, item);
+    const parts = options.includeParts === false ? [] : await getAniListRelatedParts(fetchJson, item);
 
     return {
         kind: 'anime',
@@ -183,6 +192,8 @@ export async function getAniListDetails(fetchJson: JsonFetcher, id: string): Pro
         studios,
         year: getString(startDate, 'year'),
         imdbRating: score,
+        communityRating: score,
+        communityVotes: String(sumScoreDistribution(getObject(item, 'stats')) || ''),
         url: getString(item, 'siteUrl'),
         format: mapAnimeFormat(getString(item, 'format')),
         parts,
@@ -280,6 +291,11 @@ export async function getAniListMangaDetails(fetchJson: JsonFetcher, id: string)
       year
     }
     averageScore
+    stats {
+      scoreDistribution {
+        amount
+      }
+    }
     siteUrl
     coverImage {
       extraLarge
@@ -330,9 +346,18 @@ export async function getAniListMangaDetails(fetchJson: JsonFetcher, id: string)
         chapters: chapters ? String(chapters) : '',
         volumes: volumes ? String(volumes) : '',
         rating: score,
+        communityRating: score,
+        communityVotes: String(sumScoreDistribution(getObject(item, 'stats')) || ''),
         url: getString(item, 'siteUrl'),
         parts: buildMangaParts(volumes, chapters),
     };
+}
+
+function sumScoreDistribution(stats: Record<string, unknown> | null): number {
+    return getArray(stats, 'scoreDistribution').reduce<number>((sum, entry) => {
+        const amount = getNumber(asObject(entry), 'amount') ?? 0;
+        return sum + amount;
+    }, 0);
 }
 
 function buildMangaParts(volumes: number | null, chapters: number | null): IntegrationMangaPart[] {
@@ -349,29 +374,11 @@ function buildMangaParts(volumes: number | null, chapters: number | null): Integ
     }));
 }
 
-async function getAniListRelatedParts(fetchJson: JsonFetcher, root: Record<string, unknown>): Promise<IntegrationAnimePart[]> {
+async function getAniListRelatedParts(_fetchJson: JsonFetcher, root: Record<string, unknown>): Promise<IntegrationAnimePart[]> {
     const byId = new Map<string, Record<string, unknown>>();
-    const pending: Record<string, unknown>[] = [root];
-    const visited = new Set<string>();
-    const maxItems = 24;
-
-    while (pending.length && byId.size < maxItems) {
-        const current = pending.shift();
-        if (!current) continue;
-
-        const id = getString(current, 'id');
-        if (!id || visited.has(id)) continue;
-        visited.add(id);
-        byId.set(id, current);
-
-        for (const related of getAniListRelationNodes(current)) {
-            const relatedId = getString(related, 'id');
-            if (!relatedId || visited.has(relatedId) || byId.has(relatedId)) continue;
-            byId.set(relatedId, related);
-            if (byId.size >= maxItems) break;
-            const hydrated = await getAniListRelationMedia(fetchJson, relatedId);
-            if (hydrated) pending.push(hydrated);
-        }
+    for (const item of [root, ...getAniListRelationNodes(root)]) {
+        const id = getString(item, 'id');
+        if (id) byId.set(id, item);
     }
 
     const media = Array.from(byId.values()).sort(compareAniListMedia);
@@ -406,66 +413,6 @@ function getAniListRelationNodes(item: Record<string, unknown>): Record<string, 
     }
 
     return nodes;
-}
-
-async function getAniListRelationMedia(fetchJson: JsonFetcher, id: string): Promise<Record<string, unknown> | null> {
-    const numericId = Number.parseInt(id, 10);
-    if (!Number.isFinite(numericId)) return null;
-
-    const gql = `query ($id: Int) {
-  Media(id: $id, type: ANIME) {
-    id
-    type
-    title {
-      userPreferred
-      romaji
-      english
-      native
-    }
-    format
-    episodes
-    startDate {
-      year
-    }
-    relations {
-      edges {
-        relationType
-        node {
-          id
-          type
-          title {
-            userPreferred
-            romaji
-            english
-            native
-          }
-          format
-          episodes
-          startDate {
-            year
-          }
-        }
-      }
-    }
-  }
-}`;
-
-    const json = await fetchJson(
-        'https://graphql.anilist.co',
-        {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-        },
-        'POST',
-        JSON.stringify({
-            query: gql,
-            variables: { id: numericId },
-        })
-    );
-
-    const root = asObject(json);
-    const data = getObject(root, 'data');
-    return getObject(data, 'Media');
 }
 
 function compareAniListMedia(a: Record<string, unknown>, b: Record<string, unknown>): number {

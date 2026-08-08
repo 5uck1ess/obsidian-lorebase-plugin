@@ -3,9 +3,10 @@
  * Simple input, choice, and search modals for integrations
  */
 
-import { App, Modal, requestUrl, setIcon } from 'obsidian';
+import { App, Modal, setIcon } from 'obsidian';
 import { t } from '../localization';
 import { getSteamAppIdFromImageUrl, getSteamVerticalImageCandidates } from '../services/integrations/steamImages';
+import { fetchBinary } from '../services/integrations/shared';
 
 export class ChoiceModal extends Modal {
     private titleText: string;
@@ -69,6 +70,107 @@ export class ChoiceModal extends Modal {
     }
 }
 
+export type ExistingFileChoice = 'update' | 'separate' | 'skip';
+
+export interface ExistingFilePreview {
+    title?: string;
+    subtitle?: string;
+    meta?: string[];
+    image?: string;
+}
+
+export class ExistingFileChoiceModal extends Modal {
+    private titleText: string;
+    private bodyText: string;
+    private filePath: string;
+    private preview: ExistingFilePreview;
+    private resolve?: (value: ExistingFileChoice) => void;
+    private hasResolved = false;
+
+    constructor(app: App, titleText: string, bodyText: string, filePath: string, preview: ExistingFilePreview = {}) {
+        super(app);
+        this.titleText = titleText;
+        this.bodyText = bodyText;
+        this.filePath = filePath;
+        this.preview = preview;
+    }
+
+    openAndGetValue(): Promise<ExistingFileChoice> {
+        return new Promise(resolve => {
+            this.resolve = resolve;
+            this.open();
+        });
+    }
+
+    onOpen(): void {
+        const { contentEl } = this;
+        contentEl.empty();
+
+        this.modalEl.addClass('lorebase-existing-file-modal');
+        contentEl.createEl('h2', { text: this.titleText, cls: 'lorebase-existing-file-heading' });
+        contentEl.createDiv({ text: this.bodyText, cls: 'lorebase-modal-body lorebase-existing-file-body' });
+
+        const card = contentEl.createDiv({ cls: 'lorebase-existing-file-preview' });
+        const poster = card.createDiv({ cls: 'lorebase-existing-file-poster' });
+        const image = this.preview.image?.trim();
+        if (image) {
+            poster.setCssStyles({ backgroundImage: `url("${image.replace(/"/g, '\\"')}")` });
+        } else {
+            poster.addClass('is-empty');
+            setIcon(poster, 'image');
+        }
+
+        const info = card.createDiv({ cls: 'lorebase-existing-file-info' });
+        info.createDiv({ cls: 'lorebase-existing-file-title', text: this.preview.title?.trim() || this.titleText });
+        const metaValues = this.preview.meta?.map(value => value.trim()).filter(Boolean) ?? [];
+        const subtitle = this.preview.subtitle?.trim();
+        if (metaValues.length) {
+            const meta = info.createDiv({ cls: 'lorebase-existing-file-meta' });
+            for (const value of metaValues) {
+                meta.createSpan({ cls: 'lorebase-existing-file-meta-pill', text: value });
+            }
+        } else if (subtitle) {
+            const meta = info.createDiv({ cls: 'lorebase-existing-file-meta' });
+            meta.createSpan({ cls: 'lorebase-existing-file-meta-pill', text: subtitle });
+        }
+        info.createDiv({ cls: 'lorebase-existing-file-path-label', text: this.filePath });
+
+        const actions = contentEl.createDiv({ cls: 'lorebase-modal-actions lorebase-existing-file-actions' });
+        const skipBtn = this.createExistingFileAction(actions, t('promptFileExistsSkip'), 'x', 'lorebase-existing-file-secondary lorebase-existing-file-skip');
+        const separateBtn = this.createExistingFileAction(actions, t('promptFileExistsSeparate'), 'copy-plus', 'lorebase-existing-file-secondary lorebase-existing-file-separate');
+        const updateBtn = this.createExistingFileAction(actions, t('promptFileExistsUpdate'), 'refresh-cw', 'lorebase-btn-primary lorebase-existing-file-primary');
+
+        skipBtn.addEventListener('click', () => this.finish('skip'));
+        separateBtn.addEventListener('click', () => this.finish('separate'));
+        updateBtn.addEventListener('click', () => this.finish('update'));
+    }
+
+    onClose(): void {
+        this.modalEl.removeClass('lorebase-existing-file-modal');
+        if (!this.hasResolved) {
+            this.resolve?.('skip');
+        }
+        this.contentEl.empty();
+    }
+
+    private finish(value: ExistingFileChoice): void {
+        this.hasResolved = true;
+        this.resolve?.(value);
+        this.close();
+    }
+
+    private createExistingFileAction(container: HTMLElement, label: string, icon: string, extraClass: string): HTMLButtonElement {
+        const button = container.createEl('button', {
+            cls: `lorebase-btn lorebase-existing-file-action ${extraClass}`,
+            attr: { type: 'button' },
+        });
+        const iconEl = button.createSpan({ cls: 'lorebase-existing-file-action-icon' });
+        setIcon(iconEl, icon);
+        button.createSpan({ cls: 'lorebase-existing-file-action-label', text: label });
+        return button;
+    }
+}
+
 export interface SearchItem {
     id?: string;
     title: string;
@@ -93,8 +195,8 @@ type SearchOptions = {
     pageSize?: number;
 };
 type SearchHandler<T extends SearchItem> = (query: string, providerId?: string, options?: SearchOptions) => Promise<T[]>;
+type ImageFallbackResolver<T extends SearchItem> = (item: T) => Promise<string>;
 
-const AUTO_SEARCH_DEBOUNCE_MS = 350;
 const SEARCH_PAGE_SIZE = 10;
 
 export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
@@ -106,7 +208,6 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
     private emptyText: string;
     private doneText: string;
     private cancelText: string;
-    private selectedLabelText: string;
     private titleIcon: string;
     private syncActionText?: string;
     private onSyncAction?: () => void;
@@ -119,23 +220,28 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
     private hasResolved = false;
     private focusedIndex = 0;
     private searchSeq = 0;
-    private searchTimer: number | null = null;
     private currentQuery = '';
     private currentPage = 1;
     private isReviewing = false;
     private includeDlc = false;
+    private maxSelection?: number;
+    private imageFallbackResolver?: ImageFallbackResolver<T>;
 
     private inputEl?: HTMLInputElement;
+    private searchBtn?: HTMLButtonElement;
+    private searchBtnIcon?: HTMLElement;
     private providerListEl?: HTMLElement;
     private searchOptionsEl?: HTMLElement;
     private gridEl?: HTMLElement;
     private paginationEl?: HTMLElement;
     private doneBtn?: HTMLButtonElement;
     private lastErrorText = '';
-    private lastResultCount = 0;
     private isLoading = false;
+    private activeSearchKey: string | null = null;
     private hasNextPage = false;
     private objectUrls: string[] = [];
+    private previewObjectUrlCache = new Map<string, string>();
+    private previewFallbackRequests = new Map<string, Promise<string>>();
 
     constructor(
         app: App,
@@ -146,7 +252,6 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
             emptyText: string;
             doneText: string;
             cancelText: string;
-            selectedLabelText: string;
             providerOptions?: SearchProviderOption[];
             initialProviderId?: string;
             titleIcon?: string;
@@ -155,6 +260,9 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
             manualActionText?: string;
             onManualAction?: () => void;
             includeDlcToggleText?: string;
+            initialQuery?: string;
+            maxSelection?: number;
+            imageFallbackResolver?: ImageFallbackResolver<T>;
         }
     ) {
         super(app);
@@ -164,7 +272,6 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
         this.emptyText = options.emptyText;
         this.doneText = options.doneText;
         this.cancelText = options.cancelText;
-        this.selectedLabelText = options.selectedLabelText;
         this.titleIcon = options.titleIcon ?? 'search';
         this.syncActionText = options.syncActionText;
         this.onSyncAction = options.onSyncAction;
@@ -173,6 +280,9 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
         this.includeDlcToggleText = options.includeDlcToggleText;
         this.providerOptions = options.providerOptions ?? [];
         this.activeProviderId = this.resolveInitialProvider(options.initialProviderId);
+        this.currentQuery = options.initialQuery?.trim() ?? '';
+        this.maxSelection = options.maxSelection;
+        this.imageFallbackResolver = options.imageFallbackResolver;
     }
 
     openAndGetValues(): Promise<T[] | null> {
@@ -191,7 +301,6 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
     onClose(): void {
         this.modalEl.removeClass('lorebase-select-modal-container');
         this.modalEl.removeEventListener('keydown', this.onKeydown);
-        this.clearSearchTimer();
         this.revokeObjectUrls();
         if (!this.hasResolved) {
             this.resolve?.(null);
@@ -227,20 +336,32 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
             attr: { type: 'text', placeholder: this.placeholder }
         });
         this.inputEl.value = this.currentQuery;
+        this.searchBtn = searchWrap.createEl('button', {
+            cls: 'lorebase-select-search-submit',
+            attr: {
+                type: 'button',
+                'aria-label': t('promptSearchAction'),
+                title: t('promptSearchAction'),
+            },
+        });
+        this.searchBtnIcon = this.searchBtn.createSpan({ cls: 'lorebase-select-search-submit-icon' });
+        setIcon(this.searchBtnIcon, 'search');
+        this.searchBtn.createSpan({ cls: 'lorebase-select-search-submit-label', text: t('promptSearchAction') });
         const searchControls = searchShell.createDiv({ cls: 'lorebase-select-search-controls' });
         this.providerListEl = searchControls.createDiv({ cls: 'lorebase-select-providers' });
         this.searchOptionsEl = searchControls.createDiv({ cls: 'lorebase-select-search-options' });
         this.renderProviders();
         this.renderSearchOptions();
 
-        this.inputEl.addEventListener('input', () => this.scheduleSearch());
+        this.inputEl.addEventListener('input', () => this.updateSearchDraft());
         this.inputEl.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
                 event.preventDefault();
-                this.clearSearchTimer();
                 void this.runSearch();
             }
         });
+        this.searchBtn.addEventListener('click', () => void this.runSearch());
+        this.updateSearchButtonState();
 
         this.gridEl = contentEl.createDiv({ cls: 'lorebase-select-grid lorebase-select-search-grid' });
         this.renderGrid();
@@ -297,7 +418,7 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
             const card = list.createDiv({ cls: 'lorebase-select-review-card' });
             const image = card.createDiv({ cls: 'lorebase-select-review-poster' });
             if (item.image) {
-                image.setCssStyles({ backgroundImage: `url("${item.image}")` });
+                this.setPreviewBackground(image, item.image, item);
             } else {
                 image.addClass('is-empty');
                 const emptyIcon = image.createSpan({ cls: 'lorebase-select-review-empty-icon' });
@@ -407,39 +528,23 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
         return enabledProviders[0].id;
     }
 
-    private clearSearchTimer(): void {
-        if (this.searchTimer === null) return;
-        window.clearTimeout(this.searchTimer);
-        this.searchTimer = null;
-    }
-
-    private scheduleSearch(): void {
+    private updateSearchDraft(): void {
         if (!this.inputEl) return;
         const query = this.inputEl.value.trim();
         if (query !== this.currentQuery) {
+            this.searchSeq++;
+            this.activeSearchKey = null;
+            this.isLoading = false;
             this.currentPage = 1;
-            this.lastResultCount = 0;
+            this.items = [];
+            this.focusedIndex = 0;
+            this.lastErrorText = '';
             this.hasNextPage = false;
         }
         this.currentQuery = query;
-        this.clearSearchTimer();
-
-        if (!query) {
-            this.searchSeq++;
-            this.items = [];
-            this.focusedIndex = 0;
-            this.currentPage = 1;
-            this.lastResultCount = 0;
-            this.hasNextPage = false;
-            this.renderGrid();
-            this.renderPagination();
-            return;
-        }
-
-        this.searchTimer = window.setTimeout(() => {
-            this.searchTimer = null;
-            void this.runSearch();
-        }, AUTO_SEARCH_DEBOUNCE_MS);
+        this.updateSearchButtonState();
+        this.renderGrid();
+        this.renderPagination();
     }
 
     private async runSearch(): Promise<void> {
@@ -450,19 +555,28 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
         if (this.providerOptions.length && !this.activeProviderId) {
             this.items = [];
             this.focusedIndex = 0;
-            this.lastResultCount = 0;
             this.hasNextPage = false;
             this.renderGrid();
             this.renderPagination();
+            this.updateSearchButtonState();
             return;
         }
+        const searchKey = [
+            this.activeProviderId ?? '',
+            query.toLowerCase(),
+            this.currentPage,
+            this.includeDlc ? 'dlc' : 'base',
+        ].join('|');
+        if (this.isLoading && this.activeSearchKey === searchKey) return;
+
         const seq = ++this.searchSeq;
+        this.activeSearchKey = searchKey;
         this.items = [];
         this.focusedIndex = 0;
         this.lastErrorText = '';
-        this.lastResultCount = 0;
         this.hasNextPage = false;
         this.isLoading = true;
+        this.updateSearchButtonState();
         this.renderGrid(true);
         this.renderPagination();
 
@@ -478,10 +592,11 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
             this.lastErrorText = `${t('noticeIntegrationsError')}${message}`;
         }
         if (seq !== this.searchSeq) return;
+        this.activeSearchKey = null;
         this.items = Array.isArray(results) ? results : [];
-        this.lastResultCount = this.items.length;
         this.hasNextPage = this.readHasNextPage(results);
         this.isLoading = false;
+        this.updateSearchButtonState();
         this.focusedIndex = 0;
         this.renderGrid();
         this.renderPagination();
@@ -516,12 +631,19 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
             chip.addEventListener('click', () => {
                 if (provider.disabled || provider.id === this.activeProviderId) return;
                 this.activeProviderId = provider.id;
+                this.searchSeq++;
+                this.activeSearchKey = null;
+                this.isLoading = false;
                 this.currentPage = 1;
-                this.lastResultCount = 0;
+                this.items = [];
+                this.focusedIndex = 0;
+                this.lastErrorText = '';
                 this.hasNextPage = false;
                 this.renderProviders();
                 this.renderSearchOptions();
-                this.scheduleSearch();
+                this.updateSearchButtonState();
+                this.renderGrid();
+                this.renderPagination();
             });
         }
     }
@@ -543,12 +665,28 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
 
         input.addEventListener('change', () => {
             this.includeDlc = input.checked;
+            this.searchSeq++;
+            this.activeSearchKey = null;
+            this.isLoading = false;
             this.currentPage = 1;
-            this.lastResultCount = 0;
+            this.items = [];
+            this.focusedIndex = 0;
+            this.lastErrorText = '';
             this.hasNextPage = false;
-            this.clearSearchTimer();
-            void this.runSearch();
+            this.updateSearchButtonState();
+            this.renderGrid();
+            this.renderPagination();
         });
+    }
+
+    private updateSearchButtonState(): void {
+        if (!this.searchBtn) return;
+        const hasQuery = Boolean(this.inputEl?.value.trim());
+        this.searchBtn.disabled = !hasQuery || this.isLoading;
+        this.searchBtn.toggleClass('is-loading', this.isLoading);
+        if (this.searchBtnIcon) {
+            setIcon(this.searchBtnIcon, this.isLoading ? 'loader-circle' : 'search');
+        }
     }
 
     private readHasNextPage(results: T[]): boolean {
@@ -601,14 +739,12 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
         previousBtn.addEventListener('click', () => {
             if (previousBtn.disabled) return;
             this.currentPage = Math.max(1, this.currentPage - 1);
-            this.clearSearchTimer();
             void this.runSearch();
         });
 
         nextBtn.addEventListener('click', () => {
             if (nextBtn.disabled) return;
             this.currentPage += 1;
-            this.clearSearchTimer();
             void this.runSearch();
         });
     }
@@ -629,7 +765,10 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
         this.gridEl.empty();
 
         if (loading) {
-            this.gridEl.createDiv({ cls: 'lorebase-select-empty', text: t('notifyLoading') });
+            const loadingEl = this.gridEl.createDiv({ cls: 'lorebase-select-empty lorebase-select-loading' });
+            const loadingIcon = loadingEl.createSpan({ cls: 'lorebase-select-loading-icon' });
+            setIcon(loadingIcon, 'loader-circle');
+            loadingEl.createSpan({ text: t('notifyLoading') });
             return;
         }
 
@@ -656,7 +795,7 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
 
             const image = card.createDiv({ cls: 'lorebase-select-card-image' });
             if (item.image) {
-                this.setPreviewBackground(image, item.image);
+                this.setPreviewBackground(image, item.image, item);
             } else {
                 image.addClass('is-empty');
             }
@@ -692,16 +831,28 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
 
     private toggleSelection(item: T): void {
         const key = this.getItemKey(item);
+        let isSelected: boolean;
         if (this.selected.has(key)) {
             this.selected.delete(key);
+            isSelected = false;
         } else {
+            if (this.maxSelection === 1) this.selected.clear();
             this.selected.set(key, item);
+            isSelected = true;
         }
         this.renderSelected();
-        this.renderGrid();
+        if (this.maxSelection === 1) {
+            this.renderGrid();
+            return;
+        }
+        const index = this.items.findIndex((candidate) => this.getItemKey(candidate) === key);
+        const card = index >= 0
+            ? this.gridEl?.querySelector<HTMLElement>(`.lorebase-select-card[data-index="${index}"]`)
+            : null;
+        card?.toggleClass('is-picked', isSelected);
     }
 
-    private setPreviewBackground(target: HTMLElement, imageUrl: string): void {
+    private setPreviewBackground(target: HTMLElement, imageUrl: string, item?: T, allowFallback = true): void {
         const candidates = this.getImageCandidates(imageUrl);
         let index = 0;
 
@@ -710,6 +861,9 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
             if (!next) {
                 target.setCssStyles({ backgroundImage: '' });
                 target.addClass('is-empty');
+                if (allowFallback && item && this.imageFallbackResolver) {
+                    void this.applyPreviewFallback(target, item);
+                }
                 return;
             }
 
@@ -736,12 +890,35 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
         apply();
     }
 
+    private async applyPreviewFallback(target: HTMLElement, item: T): Promise<void> {
+        if (!this.imageFallbackResolver) return;
+        const key = this.getItemKey(item);
+        let request = this.previewFallbackRequests.get(key);
+        if (!request) {
+            request = this.imageFallbackResolver(item).catch(() => '');
+            this.previewFallbackRequests.set(key, request);
+        }
+        const fallback = (await request).trim();
+        if (!fallback) return;
+        item.image = fallback;
+        if (target.isConnected) {
+            this.setPreviewBackground(target, fallback, item, false);
+        }
+    }
+
     private async setMangaDexPreviewBackground(target: HTMLElement, url: string, onError: () => void): Promise<void> {
+        const cached = this.previewObjectUrlCache.get(url);
+        if (cached) {
+            target.removeClass('is-empty');
+            target.setCssStyles({ backgroundImage: `url("${cached}")` });
+            return;
+        }
         try {
-            const response = await requestUrl({ url, method: 'GET' });
+            const response = await fetchBinary(url);
             const type = response.headers?.['content-type'] || 'image/jpeg';
             const objectUrl = URL.createObjectURL(new Blob([response.arrayBuffer], { type }));
             this.objectUrls.push(objectUrl);
+            this.previewObjectUrlCache.set(url, objectUrl);
             target.removeClass('is-empty');
             target.setCssStyles({ backgroundImage: `url("${objectUrl}")` });
         } catch {
@@ -778,6 +955,7 @@ export class MultiSelectSearchModal<T extends SearchItem> extends Modal {
     private revokeObjectUrls(): void {
         for (const url of this.objectUrls) URL.revokeObjectURL(url);
         this.objectUrls = [];
+        this.previewObjectUrlCache.clear();
     }
 
     private onKeydown = (event: KeyboardEvent): void => {

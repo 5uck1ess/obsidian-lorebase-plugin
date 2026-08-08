@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { TFile, TFolder, __setRequestUrlMock } from './mocks/obsidian';
 import { DEFAULT_SETTINGS } from '../src/constants';
-import { SteamSyncService } from '../src/services/SteamSyncService';
+import { SteamSyncController, SteamSyncService } from '../src/services/SteamSyncService';
 import { MetadataService } from '../src/services/MetadataService';
+import { resetIntegrationRequestStateForTests } from '../src/services/integrations/shared';
 import type { LorebaseSettings } from '../src/types';
 
 type CacheEntry = { frontmatter: Record<string, unknown> };
@@ -384,6 +385,7 @@ function mockVanityProfileWithWishlist(): void {
 
 describe('SteamSyncService', () => {
     beforeEach(() => {
+        resetIntegrationRequestStateForTests();
         __setRequestUrlMock(null);
     });
 
@@ -394,6 +396,85 @@ describe('SteamSyncService', () => {
         expect(service.mapOwnedStatus(25, settings)).toBe('not_started');
         expect(service.mapOwnedStatus(0, settings)).toBe('not_started');
         expect(service.mapWishlistStatus(settings)).toBe('wishlist');
+    });
+
+    it('pauses, resumes, and cancels safely between items', async () => {
+        const controller = new SteamSyncController();
+        controller.pause();
+
+        let released = false;
+        const waiting = controller.waitIfPaused().then(() => {
+            released = true;
+        });
+        await Promise.resolve();
+        expect(released).toBe(false);
+
+        controller.resume();
+        await waiting;
+        expect(released).toBe(true);
+        expect(controller.isPaused()).toBe(false);
+
+        controller.pause();
+        const cancelledWait = controller.waitIfPaused();
+        controller.cancel();
+        await cancelledWait;
+        expect(controller.isCancelled()).toBe(true);
+        expect(controller.isPaused()).toBe(false);
+    });
+
+    it('uses reviewed candidates once and stops before the next game after cancellation', async () => {
+        const app = createMockApp([
+            { path: 'Games/Portal.md', frontmatter: { steamAppId: 10 } },
+            { path: 'Games/Half Life.md', frontmatter: { steamAppId: 20 } },
+        ]);
+        const settings = cloneSettings();
+        settings.language = 'ru';
+        settings.steamSync.duplicateMode = 'skip';
+        const service = createSteamSyncService(app);
+        let enrichCalls = 0;
+        service.enrichGame = async (_appId: number) => {
+            enrichCalls++;
+            return {
+                kind: 'game',
+                name: 'Existing game',
+                description: '',
+                poster: '',
+                genres: [],
+                platforms: [],
+                developers: [],
+                publishers: [],
+                rating: '',
+                metacritic: '',
+                released: '',
+                year: '',
+                url: '',
+            };
+        };
+        const controller = new SteamSyncController();
+        const itemResults: Array<{ appId: number; outcome: string; detail?: string }> = [];
+        const haltReasons: string[] = [];
+
+        const result = await service.sync(settings, {
+            candidates: [
+                { appId: 10, name: 'Portal', playtimeForever: 10, source: 'owned' },
+                { appId: 20, name: 'Half Life', playtimeForever: 20, source: 'owned' },
+            ],
+            control: controller,
+            onItemResult: (item) => {
+                itemResults.push({ appId: item.appId, outcome: item.outcome, detail: item.detail });
+                controller.cancel();
+            },
+            onHalt: (reason) => haltReasons.push(reason),
+        });
+
+        expect(result).toEqual({ created: 0, updated: 0, skipped: 1, failed: 0 });
+        expect(enrichCalls).toBe(0);
+        expect(itemResults).toEqual([{
+            appId: 10,
+            outcome: 'skipped',
+            detail: 'Игра уже есть в LOREBASE; в настройках дубликатов выбран режим «Пропускать».',
+        }]);
+        expect(haltReasons).toEqual(['cancelled']);
     });
 
     it('loads owned games with playtime in minutes', async () => {
@@ -426,8 +507,10 @@ describe('SteamSyncService', () => {
         const content = app.vault.created['Games/Portal.md'];
         expect(content).toContain('poster: "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/10/library_600x900.jpg"');
         expect(content).toContain('status: "not_started"');
-        expect(content).toContain('steamAppId: 10');
-        expect(content).toContain('playtime: 123');
+        expect(content).toContain('integration_provider: "steam"');
+        expect(content).toContain('integration_id: "10"');
+        expect(content).not.toContain('steamAppId:');
+        expect(content).not.toContain('playtime:');
     });
 
     it('fills HowLongToBeat fields during Steam import when enabled', async () => {
@@ -488,15 +571,21 @@ describe('SteamSyncService', () => {
         settings.steamSync.steamId = STEAM_PROFILE_URL;
         settings.steamSync.importWishlist = false;
         settings.integrations!.media.games.howLongToBeatEnabled = true;
+        settings.integrations!.media.games.templateFields = [
+            ...settings.integrations!.media.games.templateFields,
+            'main',
+            'main_plus_sides',
+            'perfectionist',
+        ];
 
         const service = createSteamSyncService(app);
         const result = await service.sync(settings);
         const content = app.vault.created['Games/Portal.md'];
 
         expect(result).toEqual({ created: 1, updated: 0, skipped: 0, failed: 0 });
-        expect(content).toContain('main: "3 Hours"');
-        expect(content).toContain('main_plus_sides: "5 Hours"');
-        expect(content).toContain('perfectionist: "10 Hours"');
+        expect(content).toContain('main: 3');
+        expect(content).toContain('main_plus_sides: 5');
+        expect(content).toContain('perfectionist: 10');
     });
 
     it('skips duplicates in skip mode', async () => {
@@ -592,7 +681,7 @@ describe('SteamSyncService', () => {
             { appId: 40, name: 'Wish Two' },
         ]);
         expect(result).toEqual({ created: 3, updated: 0, skipped: 0, failed: 0 });
-        expect(app.vault.created['Games/Portal.md']).toContain('steamAppId: 10');
+        expect(app.vault.created['Games/Portal.md']).toContain('integration_id: "10"');
     });
 
     it('loads wishlist from multiple wishlistdata pages', async () => {

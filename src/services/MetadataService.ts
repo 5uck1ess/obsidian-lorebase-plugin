@@ -54,18 +54,18 @@ export class MetadataService {
 
         // Already a URL
         if (typeof value === 'string') {
-            if (value.startsWith('http://') || value.startsWith('https://')) {
-                return value;
-            }
+            const normalized = this.normalizeImagePathValue(value);
+            if (!normalized) return null;
+            if (/^https?:\/\//i.test(normalized)) return normalized;
 
             // Obsidian link format [[filename]] or [[path/to/file]]
-            const linkMatch = value.match(/\[\[(.+?)\]\]/);
+            const linkMatch = normalized.match(/\[\[(.+?)\]\]/);
             if (linkMatch) {
-                return this.getVaultResourcePath(linkMatch[1]);
+                return this.getVaultResourcePath(this.stripObsidianLinkTarget(linkMatch[1]));
             }
 
             // Direct file path (with or without extension)
-            return this.getVaultResourcePath(value);
+            return this.getVaultResourcePath(normalized);
         }
 
         // Object with path property (Dataview link format)
@@ -77,6 +77,31 @@ export class MetadataService {
         return null;
     }
 
+    private normalizeImagePathValue(value: string): string {
+        let clean = value.trim();
+        clean = clean.replace(/^["']|["']$/g, '').trim();
+        clean = clean.replace(/^!+\s*/, '').trim();
+
+        try {
+            clean = decodeURIComponent(clean);
+        } catch {
+            // Keep the original text if it is not valid URI-encoded data.
+        }
+
+        if (clean.startsWith('app://obsidian.md/')) {
+            clean = clean.slice('app://obsidian.md/'.length);
+        }
+
+        return clean.replace(/\\/g, '/').replace(/^\/+/, '').trim();
+    }
+
+    private stripObsidianLinkTarget(value: string): string {
+        return value
+            .split('|')[0]
+            .split('#')[0]
+            .trim();
+    }
+
     /**
      * Get resource path for a file in the vault
      * Tries multiple search strategies
@@ -85,17 +110,16 @@ export class MetadataService {
         if (!path) return null;
 
         // Clean up the path
-        let cleanPath = path.trim();
-
-        // Remove leading/trailing quotes
-        cleanPath = cleanPath.replace(/^["']|["']$/g, '');
+        const cleanPath = this.stripObsidianLinkTarget(this.normalizeImagePathValue(path));
         const cached = this.imagePathCache.get(cleanPath);
         if (cached !== undefined) {
             return cached;
         }
 
         const cacheResult = (value: string | null): string | null => {
-            this.imagePathCache.set(cleanPath, value);
+            if (value !== null) {
+                this.imagePathCache.set(cleanPath, value);
+            }
             return value;
         };
 

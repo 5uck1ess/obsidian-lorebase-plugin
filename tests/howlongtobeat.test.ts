@@ -44,9 +44,9 @@ describe('HowLongToBeat provider', () => {
         expect(searchCall.headers?.['x-hp-val']).toBe('hp-value');
         expect(payload.ign_test).toBe('hp-value');
         expect(result).toEqual({
-            main: '3 Hours',
-            main_plus_sides: '5 Hours',
-            perfectionist: '10 Hours',
+            main: 3,
+            main_plus_sides: 5,
+            perfectionist: 10,
         });
     });
 });

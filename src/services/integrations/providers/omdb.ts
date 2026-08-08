@@ -79,6 +79,8 @@ export async function getOmdbDetails(
         director: clean(item.Director),
         actors: clean(item.Actors),
         rating: clean(item.imdbRating),
+        communityRating: clean(item.imdbRating),
+        communityVotes: clean(item.imdbVotes).replace(/,/g, ''),
         seasons: Number.isFinite(totalSeasons) ? String(totalSeasons) : '',
         episodeCurrent: '0',
         episodeTotal: parts.reduce((sum, part) => sum + (part.episodeTotal ?? 0), 0).toString(),
@@ -93,21 +95,28 @@ async function getOmdbSeasons(
     apiKey: string,
     totalSeasons: number
 ): Promise<IntegrationVideoPart[]> {
+    const seasons = Array.from({ length: Math.min(totalSeasons, 100) }, (_, index) => index + 1);
     const parts: IntegrationVideoPart[] = [];
-    for (let season = 1; season <= Math.min(totalSeasons, 100); season++) {
-        const payload = await fetchJson(`https://www.omdbapi.com/?apikey=${encodeURIComponent(apiKey)}&i=${encodeURIComponent(id)}&Season=${season}`);
-        const episodes = payload && typeof payload === 'object' && Array.isArray((payload as Record<string, unknown>).Episodes)
-            ? (payload as Record<string, unknown>).Episodes as unknown[]
-            : [];
-        parts.push({
-            id: `season-${season}`,
-            kind: 'season',
-            title: `Season ${season}`,
-            seasonNumber: season,
-            episodeCurrent: 0,
-            episodeTotal: episodes.length || null,
-            status: 'planned',
-        });
+    const concurrency = 6;
+
+    for (let index = 0; index < seasons.length; index += concurrency) {
+        const batch = seasons.slice(index, index + concurrency);
+        parts.push(...await Promise.all(batch.map(async (season): Promise<IntegrationVideoPart> => {
+            const payload = await fetchJson(`https://www.omdbapi.com/?apikey=${encodeURIComponent(apiKey)}&i=${encodeURIComponent(id)}&Season=${season}`);
+            const episodes = payload && typeof payload === 'object' && Array.isArray((payload as Record<string, unknown>).Episodes)
+                ? (payload as Record<string, unknown>).Episodes as unknown[]
+                : [];
+            return {
+                id: `season-${season}`,
+                kind: 'season',
+                title: `Season ${season}`,
+                seasonNumber: season,
+                episodeCurrent: 0,
+                episodeTotal: episodes.length || null,
+                status: 'planned',
+            };
+        })));
     }
+
     return parts;
 }

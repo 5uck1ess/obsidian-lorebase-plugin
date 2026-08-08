@@ -90,6 +90,8 @@ export async function getGoogleBooksDetails(fetchJson: JsonFetcher, id: string, 
         released: publishedDate,
         pages: getString(info, 'pageCount'),
         rating: getString(info, 'averageRating'),
+        communityRating: getString(info, 'averageRating'),
+        communityVotes: getString(info, 'ratingsCount'),
         url: getString(info, 'canonicalVolumeLink') || getString(info, 'infoLink'),
     };
 }

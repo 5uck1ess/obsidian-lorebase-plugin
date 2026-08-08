@@ -4,7 +4,7 @@ export type ScrollAnchor = {
     offsetTop: number | null;
 };
 
-export type RenderScrollMode = 'none' | 'preserve' | 'top';
+export type RenderScrollMode = 'none' | 'preserve' | 'position' | 'top';
 
 export class ScrollManager {
     constructor(
@@ -46,7 +46,18 @@ export class ScrollManager {
             scrollContainer.scrollTop = 0;
             return;
         }
+        if (mode === 'position') {
+            this.restorePosition(anchor);
+            return;
+        }
         if (mode === 'preserve') this.restore(anchor);
+    }
+
+    private restorePosition(anchor: ScrollAnchor | null): void {
+        if (!anchor || this.isDestroyed()) return;
+        const scrollContainer = this.getScrollContainer();
+        const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+        scrollContainer.scrollTop = Math.max(0, Math.min(anchor.scrollTop, maxScrollTop));
     }
 
     private restore(anchor: ScrollAnchor | null): void {

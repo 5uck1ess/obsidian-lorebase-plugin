@@ -1,5 +1,43 @@
 import { DEFAULT_SETTINGS } from '../constants';
-import { LorebaseSettings, TagPreset } from '../types';
+import { LibraryViewState, LorebaseSettings, NoteImportFieldMapping, NoteImportSettings, SavedLibraryView, TagPreset } from '../types';
+import {
+    normalizeLibraryViewState,
+    normalizeSavedLibraryViews,
+} from '../services/media/libraryViewState';
+
+export function normalizeLibraryViewSettings(
+    raw: unknown,
+    fallback: LibraryViewState
+): { viewState: LibraryViewState; savedViews: SavedLibraryView[]; activeSavedViewId: string | null } {
+    const record = readRecord(raw) ?? {};
+    const legacyFallback: LibraryViewState = {
+        ...fallback,
+        sort: {
+            field: record.sortField === 'dateCompleted'
+                ? 'dateFinished'
+                : typeof record.sortField === 'string'
+                    ? record.sortField as LibraryViewState['sort']['field']
+                : fallback.sort.field,
+            order: record.sortOrder === 'desc' ? 'desc' : fallback.sort.order,
+        },
+        group: {
+            mode: record.sortField === 'series'
+                ? 'series'
+                : typeof record.sortField === 'string'
+                    ? 'none'
+                    : fallback.group.mode,
+            order: record.sortOrder === 'desc' ? 'desc' : fallback.group.order,
+        },
+    };
+    const viewState = normalizeLibraryViewState(record.viewState, legacyFallback);
+    const savedViews = normalizeSavedLibraryViews(record.savedViews, fallback);
+    const requestedId = typeof record.activeSavedViewId === 'string' ? record.activeSavedViewId : null;
+    return {
+        viewState,
+        savedViews,
+        activeSavedViewId: requestedId && savedViews.some((view) => view.id === requestedId) ? requestedId : null,
+    };
+}
 
 export function normalizeDescriptionLines(value: unknown, fallback: number): number {
     if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
@@ -20,11 +58,122 @@ export function normalizeTagPresets(raw: unknown): TagPreset[] {
             return {
                 id: String(id || tag || label || '').trim(),
                 label: String(label || tag || id || '').trim(),
-                tag: String(tag || label || id || '').trim().replace(/^#+/, '').toLowerCase(),
+                tag: normalizeObsidianTag(String(tag || label || id || '')),
                 icon: typeof preset.icon === 'string' ? preset.icon : undefined,
             };
         })
         .filter((preset) => preset.id && preset.label && preset.tag);
+}
+
+export function normalizeObsidianTag(value: string): string {
+    return value
+        .trim()
+        .replace(/^#+/, '')
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+}
+
+export function normalizeNoteImportSettings(raw: unknown): NoteImportSettings {
+    const defaults = DEFAULT_SETTINGS.noteImport;
+    const record = readRecord(raw) ?? {};
+    const targetMedia = readMediaTypeKey(record.targetMedia) ?? defaults.targetMedia;
+    const writeMode = record.writeMode === 'replace' ? 'replace' : defaults.writeMode;
+
+    return {
+        sourceFolderPath: typeof record.sourceFolderPath === 'string'
+            ? record.sourceFolderPath.trim()
+            : defaults.sourceFolderPath,
+        targetMedia,
+        writeMode,
+        fieldMappings: normalizeNoteImportMappings(record.fieldMappings, defaults.fieldMappings),
+        blacklist: normalizePropertyList(record.blacklist),
+    };
+}
+
+/**
+ * Migrates settings from builds where Jikan was offered as a manga provider.
+ * Provider credentials/settings can be copied safely, but note ids cannot:
+ * Jikan stores MAL ids while MangaUpdates uses a different id namespace.
+ */
+export function migrateLegacyJikanMangaSettings(
+    settings: LorebaseSettings,
+    savedIntegrations: LorebaseSettings['integrations'] | undefined
+): boolean {
+    settings.migrations ??= {};
+    if (settings.migrations.jikanMangaProviderV1) return false;
+
+    const integrations = settings.integrations;
+    const savedProviders = savedIntegrations?.providers;
+    if (integrations && savedProviders?.jikan && !savedProviders.mangaupdates) {
+        integrations.providers.mangaupdates = {
+            ...integrations.providers.mangaupdates,
+            ...savedProviders.jikan,
+        };
+    }
+    if (integrations?.media.manga.provider === 'jikan') {
+        integrations.media.manga.provider = 'mangaupdates';
+    }
+
+    settings.migrations.jikanMangaProviderV1 = true;
+    return true;
+}
+
+function normalizeNoteImportMappings(
+    raw: unknown,
+    defaults: NoteImportFieldMapping[]
+): NoteImportFieldMapping[] {
+    const source = Array.isArray(raw) && raw.length ? raw : defaults;
+    const mappings: NoteImportFieldMapping[] = [];
+    const seen = new Set<string>();
+
+    for (const entry of source) {
+        const record = readRecord(entry);
+        if (!record) continue;
+        const key = typeof record.key === 'string' ? record.key.trim() : '';
+        if (!key || seen.has(key)) continue;
+        const aliases = normalizePropertyList(record.aliases);
+        const nextAliases = aliases.includes(key) ? aliases : [key, ...aliases];
+        mappings.push({ key, aliases: nextAliases });
+        seen.add(key);
+    }
+
+    return mappings.length
+        ? mappings
+        : defaults.map((mapping) => ({ key: mapping.key, aliases: [...mapping.aliases] }));
+}
+
+function normalizePropertyList(raw: unknown): string[] {
+    const values = Array.isArray(raw)
+        ? raw
+        : typeof raw === 'string'
+            ? raw.split(/[,;\n]+/)
+            : [];
+    const normalized: string[] = [];
+    const seen = new Set<string>();
+    for (const value of values) {
+        const text = String(value).trim();
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        normalized.push(text);
+    }
+    return normalized;
+}
+
+function readMediaTypeKey(value: unknown): NoteImportSettings['targetMedia'] | undefined {
+    if (
+        value === 'auto'
+        || value === 'games'
+        || value === 'anime'
+        || value === 'movies'
+        || value === 'series'
+        || value === 'books'
+        || value === 'manga'
+    ) {
+        return value;
+    }
+    return undefined;
 }
 
 export function mergeOverlayLayout(

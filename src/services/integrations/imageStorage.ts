@@ -1,8 +1,9 @@
-import { App, TFile, TFolder, requestUrl } from 'obsidian';
+import { App, TFile, TFolder } from 'obsidian';
 import type { IntegrationImageStorageSettings, LorebaseSettings } from '../../types';
 import type { MediaKind } from './types';
 import { sanitizeFileName } from './templateUtils';
 import { getAllMarkdownFiles } from '../media/serviceUtils';
+import { fetchBinary } from './shared';
 
 type ImageValueKey = 'Poster' | 'PosterHorizontal' | 'image' | 'ImageHorizontal';
 
@@ -250,7 +251,7 @@ async function downloadImageToVault(
     app: App,
     params: { url: string; baseFolder: string; kind: MediaKind; title: string; label: string }
 ): Promise<string> {
-    const response = await requestUrl({ url: params.url, method: 'GET' });
+    const response = await fetchBinary(params.url);
     const extension = getImageExtension(params.url, response.headers?.['content-type']);
     const folderPath = normalizeVaultPath(`${params.baseFolder}/${params.kind}`);
     const titlePart = sanitizeFileName(params.title) || 'Untitled';

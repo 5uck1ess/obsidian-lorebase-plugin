@@ -1,3 +1,4 @@
+import type { GameDlc } from '../../../types';
 import { GameDetails, SearchResult } from '../types';
 import { JsonFetcher, asObject, getArray, getString, mapStringList, stripHtml, toStringSafe } from './common';
 
@@ -22,6 +23,38 @@ function getNumber(source: Record<string, unknown> | null, key: string): number 
     if (!source) return null;
     const value = source[key];
     return typeof value === 'number' ? value : null;
+}
+
+function formatVoteCount(value: number | null): string {
+    return value === null ? '' : String(Math.max(0, Math.trunc(value)));
+}
+
+function mapIgdbDlc(rawItems: unknown[]): GameDlc[] {
+    const seen = new Set<string>();
+    const mapped: GameDlc[] = [];
+
+    for (const raw of rawItems) {
+        const item = asObject(raw);
+        if (!item) continue;
+        const id = getString(item, 'id');
+        const title = getString(item, 'name');
+        if (!id || !title || seen.has(id)) continue;
+        seen.add(id);
+
+        const cover = asObject(item.cover);
+        const websites = getArray(item, 'websites');
+        const firstWebsiteUrl = getString(asObject(websites[0]), 'url');
+        mapped.push({
+            id,
+            provider: 'igdb',
+            title,
+            imageUrl: getIgdbImageUrl(getString(cover, 'image_id'), 'cover_big_2x') || null,
+            url: firstWebsiteUrl || `https://www.igdb.com/games/${id}`,
+            userRating: null,
+        });
+    }
+
+    return mapped;
 }
 
 function formatDate(timestamp: number | null): string {
@@ -131,7 +164,7 @@ export async function getIgdbDetails(
     if (!Number.isFinite(numericId) || numericId <= 0) return null;
 
     const body = [
-        'fields name,summary,storyline,first_release_date,total_rating,aggregated_rating,rating,',
+        'fields name,summary,storyline,first_release_date,total_rating,total_rating_count,aggregated_rating,aggregated_rating_count,rating,rating_count,',
         'cover.image_id,screenshots.image_id,genres.name,platforms.name,',
         'involved_companies.developer,involved_companies.publisher,involved_companies.company.name,websites.url;',
         `where id = ${numericId};`,
@@ -173,5 +206,37 @@ export async function getIgdbDetails(
         released: formatDate(released),
         year: getYear(released),
         url: firstWebsiteUrl || `https://www.igdb.com/games/${id}`,
+        communityRating: toStringSafe(item.total_rating || item.rating),
+        communityVotes: formatVoteCount(
+            getNumber(item, 'total_rating_count')
+            ?? getNumber(item, 'rating_count')
+            ?? getNumber(item, 'aggregated_rating_count')
+        ),
     };
+}
+
+export async function getIgdbDlcForGame(
+    fetchJson: JsonFetcher,
+    id: string,
+    clientId: string,
+    clientSecret: string
+): Promise<GameDlc[]> {
+    const numericId = Number(id);
+    if (!Number.isFinite(numericId) || numericId <= 0) return [];
+
+    const body = [
+        'fields dlcs.id,dlcs.name,dlcs.cover.image_id,dlcs.websites.url,',
+        'expansions.id,expansions.name,expansions.cover.image_id,expansions.websites.url;',
+        `where id = ${numericId};`,
+        'limit 1;',
+    ].join('\n');
+
+    const [rawItem] = await fetchIgdbGames(fetchJson, clientId, clientSecret, body);
+    const item = asObject(rawItem);
+    if (!item) return [];
+
+    return mapIgdbDlc([
+        ...getArray(item, 'dlcs'),
+        ...getArray(item, 'expansions'),
+    ]);
 }

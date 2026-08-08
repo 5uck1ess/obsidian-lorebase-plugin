@@ -1,4 +1,4 @@
-import { MediaItem, FilterState, MediaType, ViewMode } from '../../types';
+import { MediaItem, ViewMode } from '../../types';
 
 interface LibraryLayout {
     columns: number;
@@ -22,23 +22,6 @@ export interface RenderRandomCardParams {
     backText: string;
     createCard: (parent: HTMLElement, item: MediaItem) => void;
     onBack: () => void;
-}
-
-export function shouldGroupBySeries(
-    mediaType: MediaType,
-    sortField: string,
-    viewMode: ViewMode,
-    filter: FilterState,
-    totalItems: number
-): boolean {
-    const hasFlagFilters = filter.favoriteOnly || filter.adultOnly || filter.customOnly;
-    const isGroupableView = viewMode === 'grid' || viewMode === 'horizontal';
-
-    return mediaType === 'game'
-        && sortField === 'series'
-        && isGroupableView
-        && !hasFlagFilters
-        && totalItems <= 300;
 }
 
 export function createGrid(params: RenderFlatGridParams): HTMLElement {

@@ -91,6 +91,9 @@ export class SteamSyncReviewModal extends Modal {
     private countEl?: HTMLElement;
     private filterEl?: HTMLElement;
     private importBtn?: HTMLButtonElement;
+    private searchTimerId: number | null = null;
+    private rows = new Map<number, HTMLElement>();
+    private filterCounts = new Map<SteamReviewFilter, HTMLElement>();
 
     constructor(app: App, candidates: SteamImportCandidate[], language: Language = 'en') {
         super(app);
@@ -111,6 +114,10 @@ export class SteamSyncReviewModal extends Modal {
     }
 
     onClose(): void {
+        if (this.searchTimerId !== null) {
+            window.clearTimeout(this.searchTimerId);
+            this.searchTimerId = null;
+        }
         this.modalEl.removeClass('lorebase-steam-review-modal-container');
         if (!this.hasResolved) {
             this.resolve?.(null);
@@ -143,7 +150,11 @@ export class SteamSyncReviewModal extends Modal {
         search.value = this.query;
         search.addEventListener('input', () => {
             this.query = search.value.trim().toLowerCase();
-            this.renderList();
+            if (this.searchTimerId !== null) window.clearTimeout(this.searchTimerId);
+            this.searchTimerId = window.setTimeout(() => {
+                this.searchTimerId = null;
+                this.renderList();
+            }, 100);
         });
 
         const actions = toolbar.createDiv({ cls: 'lorebase-sr-actions' });
@@ -212,13 +223,9 @@ export class SteamSyncReviewModal extends Modal {
 
         const filtered = this.getFilteredCandidates();
         this.countEl.setText(`${this.selected.size} ${this.text('selected').toLowerCase()} В· ${filtered.length} ${this.text('shown')} В· ${this.candidates.length} ${this.text('total')}`);
-        const countText = [
-            `${this.selected.size} ${this.text('selected').toLowerCase()}`,
-            `${filtered.length} ${this.text('shown')}`,
-            `${this.candidates.length} ${this.text('total')}`,
-        ].join(' / ');
-        this.countEl.setText(countText);
+        this.updateCount(filtered.length);
         this.listEl.empty();
+        this.rows.clear();
 
         if (!filtered.length) {
             const empty = this.listEl.createDiv({ cls: 'lorebase-sr-empty' });
@@ -239,6 +246,7 @@ export class SteamSyncReviewModal extends Modal {
                 },
             });
             row.toggleClass('is-selected', checked);
+            this.rows.set(candidate.appId, row);
 
             const thumb = row.createDiv({ cls: 'lorebase-sr-thumb' });
             const imageUrls = this.getImageUrls(candidate);
@@ -293,7 +301,7 @@ export class SteamSyncReviewModal extends Modal {
                 } else {
                     this.selected.add(candidate.appId);
                 }
-                this.refresh();
+                this.updateSelectedRow(candidate.appId, row);
             };
 
             row.addEventListener('click', toggle);
@@ -308,6 +316,7 @@ export class SteamSyncReviewModal extends Modal {
     private renderFilters(): void {
         if (!this.filterEl) return;
         this.filterEl.empty();
+        this.filterCounts.clear();
         const filters: Array<{ id: SteamReviewFilter; label: string; count: number; icon: string }> = [
             { id: 'all', label: this.text('all'), count: this.candidates.length, icon: 'layout-grid' },
             { id: 'played', label: this.text('played'), count: this.candidates.filter(c => c.playtimeForever > 0).length, icon: 'gamepad-2' },
@@ -325,7 +334,8 @@ export class SteamSyncReviewModal extends Modal {
             const chipLabel = chip.createSpan({ text: filter.label });
             chipLabel.addClass('lorebase-sr-filter-label');
 
-            chip.createSpan({ cls: 'lorebase-sr-filter-count', text: String(filter.count) });
+            const count = chip.createSpan({ cls: 'lorebase-sr-filter-count', text: String(filter.count) });
+            this.filterCounts.set(filter.id, count);
 
             chip.addEventListener('click', () => {
                 this.activeFilter = filter.id;
@@ -337,8 +347,43 @@ export class SteamSyncReviewModal extends Modal {
 
     private refresh(): void {
         this.renderFilters();
-        this.renderList();
+        if (this.activeFilter === 'selected') {
+            this.renderList();
+        } else {
+            for (const [appId, row] of this.rows) {
+                const checked = this.selected.has(appId);
+                row.toggleClass('is-selected', checked);
+                row.setAttr('aria-checked', String(checked));
+                row.querySelector<HTMLElement>('.lorebase-sr-checkbox')?.toggleClass('is-checked', checked);
+            }
+            this.updateCount();
+        }
         this.updateImportButton();
+    }
+
+    private updateSelectedRow(appId: number, row: HTMLElement): void {
+        const checked = this.selected.has(appId);
+        row.toggleClass('is-selected', checked);
+        row.setAttr('aria-checked', String(checked));
+        row.querySelector<HTMLElement>('.lorebase-sr-checkbox')?.toggleClass('is-checked', checked);
+
+        if (this.activeFilter === 'selected' && !checked) {
+            row.remove();
+            this.rows.delete(appId);
+        }
+
+        this.filterCounts.get('selected')?.setText(String(this.selected.size));
+        this.updateCount();
+        this.updateImportButton();
+    }
+
+    private updateCount(filteredCount = this.getFilteredCandidates().length): void {
+        if (!this.countEl) return;
+        this.countEl.setText([
+            `${this.selected.size} ${this.text('selected').toLowerCase()}`,
+            `${filteredCount} ${this.text('shown')}`,
+            `${this.candidates.length} ${this.text('total')}`,
+        ].join(' / '));
     }
 
     private updateImportButton(): void {

@@ -1,9 +1,14 @@
 import { GameDetails, SearchResult } from '../types';
+import type { GameDlc } from '../../../types';
 import { JsonFetcher, asObject, getArray, getObject, getString, mapStringList, stripHtml, extractYear } from './common';
 import { getSteamLibraryPoster, getSteamVerticalImageCandidates } from '../steamImages';
 import { SteamGridDbOptions, getSteamGridDbPoster } from './steamgriddb';
+import { isProviderBlockedError } from '../shared';
 
 export type UrlValidator = (url: string) => Promise<boolean>;
+
+const steamDlcCache = new Map<string, GameDlc>();
+const STEAM_DLC_REQUEST_CONCURRENCY = 4;
 
 interface SteamSearchOptions {
     includeDlc?: boolean;
@@ -20,6 +25,24 @@ function withHasNext<T>(items: T[], hasNext: boolean): T[] {
         configurable: true,
     });
     return items;
+}
+
+async function mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    mapper: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(Math.max(1, concurrency), items.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+        while (nextIndex < items.length) {
+            const index = nextIndex++;
+            results[index] = await mapper(items[index], index);
+        }
+    });
+    await Promise.all(workers);
+    return results;
 }
 
 export async function searchSteam(fetchJson: JsonFetcher, query: string, options: SteamSearchOptions = {}): Promise<SearchResult[]> {
@@ -55,7 +78,10 @@ export async function searchSteam(fetchJson: JsonFetcher, query: string, options
 
         const released = getString(record, 'released');
         const id = getString(record, 'id');
-        const image = await getFirstExistingUrl(getSteamVerticalImageCandidates(id, getSteamLibraryPoster(id)), options.imageExists);
+        const candidates = getSteamVerticalImageCandidates(id, getSteamLibraryPoster(id));
+        const image = options.imageExists
+            ? await getFirstExistingUrl(candidates, options.imageExists)
+            : '';
 
         return {
             id,
@@ -67,10 +93,17 @@ export async function searchSteam(fetchJson: JsonFetcher, query: string, options
         };
     }))).filter((result): result is SearchResult => result !== null);
 
-    const results = options.includeDlc ? mapped : await filterSteamDlc(fetchJson, mapped);
+    const results = options.includeDlc
+        ? mapped
+        : mapped.filter((result) => !isLikelySteamExtraContent(result.title));
     const enriched = await enrichSteamGridDbImages(fetchJson, results, options.steamGridDb);
+    const withPreviewFallback = enriched.map((result) => (
+        result.image
+            ? result
+            : { ...result, image: getSteamLibraryPoster(result.id) }
+    ));
 
-    return withHasNext(enriched, hasNext);
+    return withHasNext(withPreviewFallback, hasNext);
 }
 
 function parseSteamSearchHtml(html: string): Record<string, unknown>[] {
@@ -163,19 +196,64 @@ export async function getSteamDetails(
     };
 }
 
+export async function getSteamDlcForGame(
+    fetchJson: JsonFetcher,
+    id: string,
+    options: { imageExists?: UrlValidator; existing?: GameDlc[] } = {}
+): Promise<GameDlc[]> {
+    const appId = id.trim();
+    if (!appId) return [];
+
+    const data = await fetchSteamBasicAppDetails(fetchJson, appId);
+    const dlcIds = getArray(data, 'dlc')
+        .map((value) => String(value).trim())
+        .filter(Boolean);
+    if (!dlcIds.length) return [];
+
+    const existing = new Map((options.existing ?? []).map((entry) => [String(entry.id), entry]));
+    const records = await mapWithConcurrency(
+        dlcIds.slice(0, 80),
+        STEAM_DLC_REQUEST_CONCURRENCY,
+        async (dlcId): Promise<GameDlc | null> => {
+        const known = existing.get(dlcId) ?? steamDlcCache.get(dlcId);
+        if (known?.title) return { ...known, provider: 'steam', id: dlcId };
+        const details = await fetchSteamBasicAppDetails(fetchJson, dlcId);
+        if (!details) return null;
+        const title = getString(details, 'name');
+        if (!title) return null;
+        const headerImage = getString(details, 'header_image')
+            || getString(details, 'capsule_image')
+            || getString(details, 'capsule_imagev5');
+        // appdetails already returns a verified header image. Probing several
+        // CDN candidates for every DLC multiplied refresh time dramatically,
+        // especially through Obsidian's paced request queue.
+        const poster = headerImage || getSteamLibraryPoster(dlcId);
+        const record: GameDlc = {
+            id: dlcId,
+            provider: 'steam',
+            title,
+            imageUrl: poster,
+            url: `https://store.steampowered.com/app/${dlcId}/`,
+            userRating: null,
+        };
+        steamDlcCache.set(dlcId, record);
+        return record;
+        }
+    );
+
+    return records.filter((record): record is GameDlc => record !== null);
+}
+
 async function getFirstExistingUrl(candidates: string[], imageExists?: UrlValidator): Promise<string> {
     if (!imageExists) return '';
 
     for (const candidate of candidates) {
         try {
-            if (await imageExists(candidate)) {
-                return candidate;
-            }
+            if (await imageExists(candidate)) return candidate;
         } catch {
-            // Treat validator failures as a missing image. Search/details should still work.
+            // Try the next known Steam image variant.
         }
     }
-
     return '';
 }
 
@@ -193,32 +271,6 @@ async function enrichSteamGridDbImages(
     }));
 }
 
-async function filterSteamDlc(fetchJson: JsonFetcher, results: SearchResult[]): Promise<SearchResult[]> {
-    const ids = results
-        .map((result) => result.id)
-        .filter((id): id is string => Boolean(id));
-    if (!ids.length) return results;
-
-    try {
-        const detailEntries = await Promise.all(ids.map(async (id) => [
-            id,
-            await fetchSteamBasicAppDetails(fetchJson, id),
-        ] as const));
-        const detailsById = new Map(detailEntries);
-
-        return results.filter((result) => {
-            const data = detailsById.get(result.id);
-            if (!data) {
-                return !isLikelySteamExtraContent(result.title);
-            }
-            return !isSteamExtraContentData(data) && !isLikelySteamExtraContent(result.title);
-        });
-    } catch (error) {
-        console.warn('[LOREBASE] Failed to filter Steam DLC search results.', error);
-        return results;
-    }
-}
-
 async function fetchSteamBasicAppDetails(fetchJson: JsonFetcher, id: string): Promise<Record<string, unknown> | null> {
     try {
         const url = new URL('https://store.steampowered.com/api/appdetails');
@@ -230,16 +282,10 @@ async function fetchSteamBasicAppDetails(fetchJson: JsonFetcher, id: string): Pr
         const json = asObject(await fetchJson(url.toString()));
         const appResult = getObject(json, id);
         return getObject(appResult, 'data');
-    } catch {
+    } catch (error) {
+        if (isProviderBlockedError(error)) throw error;
         return null;
     }
-}
-
-function isSteamExtraContentData(data: Record<string, unknown>): boolean {
-    const type = getString(data, 'type').toLowerCase();
-    return type === 'dlc'
-        || type === 'music'
-        || Boolean(getObject(data, 'fullgame'));
 }
 
 function isLikelySteamExtraContent(title: string): boolean {

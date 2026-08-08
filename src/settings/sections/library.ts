@@ -1,7 +1,7 @@
 import { Setting } from 'obsidian';
 import { DEFAULT_SETTINGS } from '../../constants';
 import { t } from '../../localization';
-import type { CardSize, CardStyle } from '../../types';
+import type { CardSize } from '../../types';
 import { FolderSuggest } from '../../components/FolderSuggest';
 import { ICON_MEDIA } from './constants';
 import { addLorebaseDropdown } from './customDropdown';
@@ -155,40 +155,6 @@ function renderLibrarySettingsPanel(
         }
     );
 
-    if (key === 'anime' || key === 'series' || key === 'books' || key === 'manga') {
-        const cardStyleSetting = new Setting(container)
-            .setName(t('settingsCardStyle'))
-            .setDesc(t('settingsCardStyleDesc'));
-        addLorebaseDropdown<CardStyle>(
-            cardStyleSetting,
-            [
-                { value: 'hover', label: t('settingsCardStyleHover') },
-                { value: 'progress', label: t('settingsCardStyleProgress') },
-            ],
-            settings.cardStyle ?? DEFAULT_SETTINGS[key].cardStyle,
-            async (value) => {
-                context.plugin.settings[key].cardStyle = value;
-                await context.plugin.saveSettings();
-                context.plugin.refreshViews();
-            }
-        );
-    }
-
-    if (key === 'books' || key === 'manga') {
-        new Setting(container)
-            .setName(t('settingsBookCoverEffect'))
-            .setDesc(t('settingsBookCoverEffectDesc'))
-            .addToggle(toggle => {
-                toggle
-                    .setValue(settings.bookCoverEffect)
-                    .onChange(async (value) => {
-                        context.plugin.settings[key].bookCoverEffect = value;
-                        await context.plugin.saveSettings();
-                        context.plugin.refreshViewsVisuals();
-                    });
-            });
-    }
-
     new Setting(container)
         .setName(t('settingsCustomCardSize'))
         .setDesc(t('settingsCustomCardSizeDesc'))
@@ -301,7 +267,7 @@ function renderLibrarySettingsPanel(
             });
     }
 
-    if (key === 'games') {
+    if (key === 'games' || key === 'manga') {
         new Setting(container)
             .setName(t('settingsShowAdult'))
             .setDesc(t('settingsDescShowAdult'))

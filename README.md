@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Obsidian-Plugin-7C3AED?style=for-the-badge&logo=obsidian&logoColor=white" alt="Obsidian Plugin" />
-  <img src="https://img.shields.io/badge/Version-2.0.6-e4a47e?style=for-the-badge" alt="Version" />
+  <img src="https://img.shields.io/badge/Version-3.0.0-e4a47e?style=for-the-badge" alt="Version" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License" />
   <img src="https://img.shields.io/badge/TypeScript-5.3-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
 </p>
@@ -194,13 +194,19 @@ Each library gets its own folder path, card layout, badges, and note template in
 
 ---
 
-### 🧾 Manual Card Creation 🆕
+### 🧾 Manual Card Creation
 
 Not every item exists in a metadata provider — now you can add a card by hand, filling in the title, poster, and details yourself, without going through a search.
 
 ---
 
-### 🔗 Related Media 🆕
+### 📥 Import Existing Notes 🆕
+
+Bring notes you already have into your library. Lorebase automatically detects the media type, lets you map fields, and shows a preview of the changes before anything is written.
+
+---
+
+### 🔗 Related Media
 
 Link local notes together — connect a game to its sequel, a book to its manga adaptation, or a movie to the series it belongs to, directly from within Lorebase.
 
@@ -259,8 +265,9 @@ All badges have **customizable positions** (X/Y percentage), independently confi
 | Control | Description |
 |---|---|
 | 🔎 **Search** | Real-time search with 150ms debounce |
-| 🏷️ **Filters** | By status, favorite, 18+, custom poster |
+| 🏷️ **Filters** | By status, favorite, 18+, custom poster, plus advanced filters over system and custom YAML fields, lists, numbers, and dates 🆕 |
 | ↕️ **Sort** | By name, year, rating, or completion date |
+| 🗂️ **Saved views** 🆕 | Your own sort/group/filter presets saved per media type |
 | 🏷️ **Tags** | Plan tags, custom tags, and genres |
 | ➕ **Add** | Create new items via metadata integrations or manually |
 | 🎲 **Random** | Pick a random item from your collection |
@@ -274,7 +281,7 @@ A beautiful dashboard modal with:
 - **Key metrics**: Total items, completed count, average rating, favorites
 - **Status distribution**: Bar charts with percentages
 - **Rating distribution**: Emoji-based visualization (😍😊😐😕🤢)
-- **Additional info**: Series count, custom posters, completion % — now with per-media-type breakdowns covering movies, TV shows, books, and manga
+- **Additional info**: Series count, custom posters, completion % — with per-media-type breakdowns covering movies, TV shows, books, and manga
 
 ---
 
@@ -295,7 +302,7 @@ A three-column modal editor inspired by modern CMS design:
   </tr>
 </table>
 
-> 🆕 Reworked genre, tag, rating, and status handling across all six libraries.
+Editors now share a unified field layout, tabs, a pinned save bar, and common metadata panels across all six libraries. A dedicated **My Notes** section lets you edit your personal text without touching the note's structure, and **start/completion dates** get their own pickers — auto-set when an item is marked completed, and shown right on the card.
 
 **Keyboard shortcuts**: `Ctrl+Enter` to save · `Escape` to close
 
@@ -314,7 +321,7 @@ Adjustable intensity from 20 to 150 particles with realistic sway, rotation, and
 
 ## 🔗 Integrations
 
-Lorebase can automatically fetch metadata when creating new entries — or you can skip providers entirely and add a card manually.
+Lorebase can automatically fetch metadata when creating new entries — or you can skip providers entirely and add a card manually. Existing cards can also be linked to a metadata source after the fact, letting you switch providers or safely refresh their data, including community ratings (score and vote count) or a manual refresh.
 
 ### Game Providers
 
@@ -322,7 +329,7 @@ Lorebase can automatically fetch metadata when creating new entries — or you c
 |---|---|---|
 | <img src="https://img.shields.io/badge/Steam-000000?style=flat&logo=steam&logoColor=white" /> | Search Steam Store for games | None |
 | <img src="https://img.shields.io/badge/Steam_Sync-000000?style=flat&logo=steam&logoColor=white" /> | Import your Steam library and wishlist directly | Steam profile URL |
-| <img src="https://img.shields.io/badge/SteamGridDB-000000?style=flat" /> 🆕 | Fallback source for high-quality vertical Steam covers | Free API key |
+| <img src="https://img.shields.io/badge/SteamGridDB-000000?style=flat" /> | Fallback source for high-quality vertical Steam covers | Free API key |
 | <img src="https://img.shields.io/badge/RAWG-1a1a2e?style=flat" /> | Largest video game database | Free API key |
 | <img src="https://img.shields.io/badge/IGDB-9147FF?style=flat" /> | Internet Game Database — alternative metadata source | Free API key |
 | <img src="https://img.shields.io/badge/HowLongToBeat-4B8BBE?style=flat" /> | Game completion times | None |
@@ -333,23 +340,24 @@ Lorebase can automatically fetch metadata when creating new entries — or you c
 |---|---|---|
 | <img src="https://img.shields.io/badge/AniList-02A9FF?style=flat&logo=anilist&logoColor=white" /> | Comprehensive anime database | None |
 | <img src="https://img.shields.io/badge/Shikimori-2E51A2?style=flat" /> | Russian anime platform | None |
-| <img src="https://img.shields.io/badge/Jikan-2E51A2?style=flat" /> 🆕 | MyAnimeList metadata through the Jikan API | None |
-| <img src="https://img.shields.io/badge/MangaDex-FF6740?style=flat" /> 🆕 | Manga database and metadata source | None |
+| <img src="https://img.shields.io/badge/Jikan-2E51A2?style=flat" /> | MyAnimeList metadata through the Jikan API | None |
+| <img src="https://img.shields.io/badge/MangaUpdates-FF6740?style=flat" /> 🆕 | Primary manga search provider, replacing Jikan for manga | None |
+| <img src="https://img.shields.io/badge/MangaDex-FF6740?style=flat" /> | Manga database and metadata source | None |
 
-### Movie & TV Providers 🆕
-
-| Provider | Description | Requirements |
-|---|---|---|
-| <img src="https://img.shields.io/badge/TMDB-01B4E4?style=flat" /> 🆕 | Movies and TV shows, posters and metadata | Free API key |
-| <img src="https://img.shields.io/badge/TVmaze-000000?style=flat" /> 🆕 | TV show schedules and metadata | None |
-| <img src="https://img.shields.io/badge/OMDb-000000?style=flat" /> 🆕 | Movie and TV metadata via IMDb data | Free API key |
-
-### Book Providers 🆕
+### Movie & TV Providers
 
 | Provider | Description | Requirements |
 |---|---|---|
-| <img src="https://img.shields.io/badge/Hardcover-000000?style=flat" /> 🆕 | Book tracking and metadata | Free API key |
-| <img src="https://img.shields.io/badge/Google_Books-4285F4?style=flat&logo=google&logoColor=white" /> 🆕 | Large book metadata database | Optional API key |
+| <img src="https://img.shields.io/badge/TMDB-01B4E4?style=flat" /> | Movies and TV shows, posters and metadata | Free API key |
+| <img src="https://img.shields.io/badge/TVmaze-000000?style=flat" /> | TV show schedules and metadata | None |
+| <img src="https://img.shields.io/badge/OMDb-000000?style=flat" /> | Movie and TV metadata via IMDb data | Free API key |
+
+### Book Providers
+
+| Provider | Description | Requirements |
+|---|---|---|
+| <img src="https://img.shields.io/badge/Hardcover-000000?style=flat" /> | Book tracking and metadata | Free API key |
+| <img src="https://img.shields.io/badge/Google_Books-4285F4?style=flat&logo=google&logoColor=white" /> | Large book metadata database | Optional API key |
 
 > 🧪 *Experimental*: download a poster from any URL straight to local storage instead of linking it remotely.
 
@@ -425,11 +433,11 @@ Right-click any card to:
 | **Accent Color** | Theme accent | 10 presets + custom hex |
 | **Particle Effect** | Ambient particles | None, Sakura, Snow |
 | **Particle Intensity** | Number of particles | 20–150 |
-| **Settings Layout** 🆕 | How settings sections are displayed | Tabs or Accordion |
+| **Settings Layout** | How settings sections are displayed | Tabs or Accordion |
 
 ### Library Settings *(per media type)*
 
-Now available independently for **Games, Anime, Movies, TV Shows, Books, and Manga**.
+Available independently for **Games, Anime, Movies, TV Shows, Books, and Manga**.
 
 | Setting | Description |
 |---|---|
@@ -447,13 +455,20 @@ Now available independently for **Games, Anime, Movies, TV Shows, Books, and Man
 - **Progress badges**: Season/episode, page, chapter, or volume progress, depending on media type
 - **Card style**: Hover overlay or progress-footer cards where supported
 - **Book cover effect**: Hardcover-style cards for books and manga
+- **Completion date format** 🆕: Choose how completion dates are displayed on cards
 
 ### Integrations
 
 - Toggle each provider on/off
 - Enter API keys where required (RAWG, IGDB, SteamGridDB, TMDB, OMDb, Hardcover) or recommended (Google Books)
 - Select default provider per media type
+- Link an existing card to a metadata source, switch providers, or safely refresh its data without losing your own edits 🆕
 - Configure note templates per media type (simple field list or advanced YAML), including dedicated templates for movies, TV shows, books, and manga
+
+### Diagnostics 🆕
+
+- **Request log**: Review requests, errors, retries, and temporary provider rate-limit blocks
+- **Steam Sync progress**: A dedicated progress window with pause, resume, cancel, and detailed processing results
 
 ---
 
@@ -540,7 +555,7 @@ One of the greatest anime of all time...
 </details>
 
 <details>
-<summary><strong>🎬 Movie Example</strong> 🆕</summary>
+<summary><strong>🎬 Movie Example</strong></summary>
 
 ```yaml
 ---
@@ -573,7 +588,7 @@ A slow, visual sci-fi sequel with a strong atmosphere...
 </details>
 
 <details>
-<summary><strong>📺 TV Show Example</strong> 🆕</summary>
+<summary><strong>📺 TV Show Example</strong></summary>
 
 ```yaml
 ---
@@ -616,7 +631,7 @@ Season tracking works through series_parts and active_part_id...
 </details>
 
 <details>
-<summary><strong>📖 Book Example</strong> 🆕</summary>
+<summary><strong>📖 Book Example</strong></summary>
 
 ```yaml
 ---
@@ -651,7 +666,7 @@ A dense but rewarding classic...
 </details>
 
 <details>
-<summary><strong>📚 Manga Example</strong> 🆕</summary>
+<summary><strong>📚 Manga Example</strong></summary>
 
 ```yaml
 ---
@@ -706,6 +721,7 @@ Lorebase is optimized for large collections:
 - **RAF-based scroll rendering** — Virtual grid updates are aligned with animation frames
 - **SVG template caching** — Icons use `cloneNode` instead of `innerHTML`
 - **ResizeObserver** — Adaptive layout without polling
+- **Reworked virtual grid** 🆕 — Improved scroll restoration and rendering for large libraries
 
 ---
 
@@ -717,13 +733,56 @@ Lorebase is optimized for large collections:
 | 🇷🇺 Russian | ✅ Full |
 | 🇺🇦 Ukrainian | 🧪 Beta |
 
-All core UI elements, status labels, settings descriptions, and error messages are translated, including all new media types and providers. Ukrainian is new in 2.0.6 and marked as beta while community wording is reviewed.
+All core UI elements, status labels, settings descriptions, and error messages are translated, including all media types and providers.
 
 ---
 
 ## 📋 Changelog
 
 <details open>
+<summary><strong>v3.0.0</strong></summary>
+<br />
+
+> ⚠️ **Mobile UI is in active development.** The reworked mobile interface for the library, add, and edit flows is an early alpha — expect rough edges while it's polished over the next few releases.
+
+**Added**
+- 📥 **Import existing notes** — bring notes into your library with automatic media-type detection, field mapping, and a preview of the changes
+- 🔗 **Metadata sources for existing cards** — link a card to a provider, switch providers, and safely refresh its data
+- ⭐ **Community ratings** — score, vote count, and a manual refresh of provider data
+- 🧩 **Extended progress** — seasons, episodes, volumes, chapters, DLC, active parts, and quick actions right from the card
+- 📝 **"My Notes" section** — edit your personal text without touching the note's structure
+- 🔗 **Related media** — create links between games, anime, movies, TV shows, books, and manga
+- 📅 **Start and completion dates** — convenient date pickers, auto-set on completion, and the date shown on the card
+- 🗂️ **Saved library views** — your own sort/group/filter presets for each media type
+- 🎛️ **Advanced filters** — filter on system and custom YAML fields, lists, numbers, and dates
+- 🖱️ **Card click action** — open the note or jump straight into editing
+- 🩺 **Request diagnostics** — a log of requests, errors, retries, and temporary provider rate-limit blocks
+- ⏯️ **Steam Sync controls** — a progress window with pause, resume, cancel, and detailed processing results
+- 🔎 **MangaUpdates** — new primary manga search provider, replacing Jikan for manga
+
+**Improved**
+- 📱 Reworked mobile interface for the library, add, and edit flows across all media types *(early alpha — still a lot of work ahead)*
+- ✏️ Editors now share a unified field layout, tabs, a pinned save bar, and common metadata panels
+- 🕹️ Steam Sync got a faster preview, earlier duplicate detection, and improved library/wishlist loading
+- 🌐 Improved providers and fallback sources for games, anime, movies, TV shows, books, and manga
+- 📄 Improved templates and frontmatter generation: arrays, numbers, dates, field order, and consistent naming
+- 🛡️ Added safe request throttling, retries, and protection against **403** and **429** errors
+- 🖼️ Improved handling of local images, remote posters, and custom covers
+- 🎨 Expanded appearance settings for cards, completion date format, and library effects
+- 🧱 Reworked the virtual grid, scroll restoration, and rendering for large libraries
+
+**Fixed**
+- Improved handling of provider **403** and **429** errors: added safe pauses, retries, and protection against excessive requests
+- Plans and tags now write to notes correctly, including values with spaces
+- Fixed metadata-source recording and detection when adding cards from mobile
+- Fixed major mobile UI issues: overlapping panels, duplicate close button, status display, and editor behavior
+- Fixed DLC loading, vertical Steam cover selection, and SteamGridDB fallback
+- Fixed metadata updates wiping personal progress, custom fields, and manually edited values
+- Improved stability of search, import, Steam Sync, and external provider requests
+
+</details>
+
+<details>
 <summary><strong>v2.0.6</strong></summary>
 <br />
 

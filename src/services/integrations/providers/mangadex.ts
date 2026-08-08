@@ -1,5 +1,6 @@
 import { IntegrationMangaPart, MangaDetails, SearchResult } from '../types';
 import { JsonFetcher, asObject, getArray, getObject, getString, mapStringList, stripHtml } from './common';
+import { isProviderBlockedError } from '../shared';
 
 interface MangaDexOptions {
     page?: number;
@@ -161,7 +162,8 @@ async function fetchCoverFileName(fetchJson: JsonFetcher, mangaId: string): Prom
             ?? covers.find((cover) => getString(getObject(cover, 'attributes'), 'fileName'))
             ?? null;
         return getString(getObject(preferred, 'attributes'), 'fileName');
-    } catch {
+    } catch (error) {
+        if (isProviderBlockedError(error)) throw error;
         return '';
     }
 }

@@ -1,7 +1,7 @@
 import type { SearchItem } from '../../modals/IntegrationModals';
 import type { AnimeFormat, AnimeStatus, ReadingStatus, VideoStatus } from '../../types';
 
-export type ProviderId = 'rawg' | 'steam' | 'igdb' | 'anilist' | 'shikimori' | 'tmdb' | 'tvmaze' | 'omdb' | 'hardcover' | 'googlebooks' | 'jikan' | 'mangadex';
+export type ProviderId = 'rawg' | 'steam' | 'igdb' | 'anilist' | 'jikan' | 'shikimori' | 'tmdb' | 'tvmaze' | 'omdb' | 'hardcover' | 'googlebooks' | 'mangaupdates' | 'mangadex';
 export type MediaKind = 'games' | 'anime' | 'movies' | 'series' | 'books' | 'manga';
 
 export interface SearchResult extends SearchItem {
@@ -10,6 +10,18 @@ export interface SearchResult extends SearchItem {
     image?: string;
     year?: string;
     format?: string;
+}
+
+export interface MediaSourceSelection extends SearchResult {
+    provider: ProviderId;
+}
+
+export interface MediaEnrichmentPatch {
+    kind: MediaKind;
+    source: MediaSourceSelection;
+    values: Record<string, unknown>;
+    filledFields: string[];
+    skippedFields: string[];
 }
 
 export interface GameDetails {
@@ -27,6 +39,8 @@ export interface GameDetails {
     released: string;
     year: string;
     url: string;
+    communityRating?: string;
+    communityVotes?: string;
 }
 
 export interface AnimeDetails {
@@ -42,6 +56,8 @@ export interface AnimeDetails {
     url: string;
     format?: string;
     parts?: IntegrationAnimePart[];
+    communityRating?: string;
+    communityVotes?: string;
 }
 
 export interface VideoDetails {
@@ -64,6 +80,8 @@ export interface VideoDetails {
     studios?: string[];
     url: string;
     parts?: IntegrationVideoPart[];
+    communityRating?: string;
+    communityVotes?: string;
 }
 
 export interface BookDetails {
@@ -80,6 +98,8 @@ export interface BookDetails {
     pages?: string;
     rating?: string;
     url: string;
+    communityRating?: string;
+    communityVotes?: string;
 }
 
 export interface MangaDetails {
@@ -91,12 +111,15 @@ export interface MangaDetails {
     authors: string[];
     artists: string[];
     genres: string[];
+    isAdult?: boolean;
     year: string;
     chapters?: string;
     volumes?: string;
     rating?: string;
     url: string;
     parts?: IntegrationMangaPart[];
+    communityRating?: string;
+    communityVotes?: string;
 }
 
 export interface IntegrationAnimePart {

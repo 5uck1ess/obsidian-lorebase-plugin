@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { getSteamDetails, searchSteam } from '../src/services/integrations/providers/steam';
+import { describe, expect, it, vi } from 'vitest';
+import { getSteamDetails, getSteamDlcForGame, searchSteam } from '../src/services/integrations/providers/steam';
 import type { JsonFetcher } from '../src/services/integrations/providers/common';
+import { getSteamGridDbPoster } from '../src/services/integrations/providers/steamgriddb';
 
 function steamSearchHtml(items: Array<{ id: number; name: string; released?: string }>): string {
     return items.map((item) => `
@@ -42,12 +43,82 @@ function createSteamSearchFetcher(): { fetchJson: JsonFetcher; calls: string[] }
 }
 
 describe('Steam provider', () => {
+    it('reuses existing DLC metadata instead of refetching every DLC', async () => {
+        const calls: string[] = [];
+        const fetchJson: JsonFetcher = async (url) => {
+            calls.push(url);
+            return {
+                99100: {
+                    success: true,
+                    data: { dlc: [99101, 99102] },
+                },
+            };
+        };
+
+        const result = await getSteamDlcForGame(fetchJson, '99100', {
+            existing: [
+                { id: '99101', provider: 'steam', title: 'Known One', imageUrl: 'one.jpg', url: '', userRating: 4 },
+                { id: '99102', provider: 'steam', title: 'Known Two', imageUrl: 'two.jpg', url: '', userRating: null },
+            ],
+        });
+
+        expect(result.map((entry) => entry.title)).toEqual(['Known One', 'Known Two']);
+        expect(calls).toHaveLength(1);
+    });
+
+    it('limits new Steam DLC detail requests to four at a time', async () => {
+        const parentId = '99200';
+        const dlcIds = Array.from({ length: 12 }, (_, index) => 99201 + index);
+        let active = 0;
+        let maxActive = 0;
+        const fetchJson: JsonFetcher = async (url) => {
+            const id = new URL(url).searchParams.get('appids') ?? '';
+            if (id === parentId) {
+                return { [parentId]: { success: true, data: { dlc: dlcIds } } };
+            }
+
+            active++;
+            maxActive = Math.max(maxActive, active);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            active--;
+            return {
+                [id]: {
+                    success: true,
+                    data: { name: `DLC ${id}`, header_image: `${id}.jpg` },
+                },
+            };
+        };
+
+        const result = await getSteamDlcForGame(fetchJson, parentId);
+
+        expect(maxActive).toBe(4);
+        expect(result.map((entry) => entry.id)).toEqual(dlcIds.map(String));
+    });
+
+    it('silently treats a SteamGridDB HTTP 404 as a missing poster', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const fetchJson: JsonFetcher = async () => {
+            throw new Error('Steam request failed (HTTP 404).');
+        };
+
+        try {
+            await expect(getSteamGridDbPoster(fetchJson, '3512480', {
+                enabled: true,
+                apiKey: 'sgdb-key',
+            })).resolves.toBe('');
+            expect(warn).not.toHaveBeenCalled();
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
     it('filters DLC from Steam search results by default', async () => {
-        const { fetchJson } = createSteamSearchFetcher();
+        const { fetchJson, calls } = createSteamSearchFetcher();
 
         const results = await searchSteam(fetchJson, 'base game');
 
         expect(results.map((result) => result.title)).toEqual(['Base Game']);
+        expect(calls.filter((url) => url.includes('/api/appdetails'))).toHaveLength(0);
     });
 
     it('keeps DLC in Steam search results when requested', async () => {
@@ -61,6 +132,37 @@ describe('Steam provider', () => {
             'Base Game REDkit',
         ]);
         expect(calls.some((url) => url.includes('/api/appdetails'))).toBe(false);
+    });
+
+    it('keeps Steam 600x900 preview URLs when SteamGridDB is disabled', async () => {
+        const { fetchJson } = createSteamSearchFetcher();
+
+        const results = await searchSteam(fetchJson, 'base game');
+
+        expect(results[0]?.image).toBe(
+            'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/10/library_600x900.jpg'
+        );
+    });
+
+    it('falls back to the Steam 600x900 preview when SteamGridDB has no grid', async () => {
+        const fetchJson: JsonFetcher = async (url) => {
+            if (url.includes('/search/results/')) {
+                return {
+                    total_count: 1,
+                    results_html: steamSearchHtml([{ id: 10, name: 'Base Game' }]),
+                };
+            }
+            if (url.includes('/api/v2/grids/steam/10')) return { data: [] };
+            return {};
+        };
+
+        const results = await searchSteam(fetchJson, 'base game', {
+            steamGridDb: { enabled: true, apiKey: 'sgdb-key' },
+        });
+
+        expect(results[0]?.image).toBe(
+            'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/10/library_600x900.jpg'
+        );
     });
 
     it('passes Steam search pagination through the web search endpoint', async () => {
@@ -98,13 +200,43 @@ describe('Steam provider', () => {
 
         const results = await searchSteam(fetchJson, 'base game', {
             steamGridDb: { enabled: true, apiKey: 'sgdb-key' },
+            imageExists: async () => false,
         });
 
         expect(results[0]?.image).toBe('https://cdn.example.com/base-game-grid.jpg');
         expect(calls.some((call) => call.headers?.Authorization === 'Bearer sgdb-key')).toBe(true);
     });
 
+    it('uses SteamGridDB when Steam search has no validated vertical artwork', async () => {
+        const calls: string[] = [];
+        const fetchJson: JsonFetcher = async (url) => {
+            calls.push(url);
+            if (url.includes('/search/results/')) {
+                return {
+                    total_count: 1,
+                    results_html: steamSearchHtml([{ id: 243470, name: 'Watch Dogs', released: 'May 27, 2014' }]),
+                };
+            }
+            if (url.includes('/api/v2/grids/steam/243470')) {
+                return {
+                    data: [
+                        { url: 'https://cdn.example.com/watch-dogs-grid.jpg', width: 600, height: 900 },
+                    ],
+                };
+            }
+            return {};
+        };
+
+        const results = await searchSteam(fetchJson, 'Watch Dogs', {
+            steamGridDb: { enabled: true, apiKey: 'sgdb-key' },
+        });
+
+        expect(results[0]?.image).toBe('https://cdn.example.com/watch-dogs-grid.jpg');
+        expect(calls.some((url) => url.includes('/api/v2/grids/steam/243470'))).toBe(true);
+    });
+
     it('does not replace an existing Steam vertical poster with SteamGridDB search fallback', async () => {
+        let steamGridDbCalls = 0;
         const fetchJson: JsonFetcher = async (url) => {
             if (url.includes('/search/results/')) {
                 return {
@@ -116,6 +248,7 @@ describe('Steam provider', () => {
                 return { 10: { success: true, data: { type: 'game' } } };
             }
             if (url.includes('steamgriddb.com/api/v2/grids/steam/10')) {
+                steamGridDbCalls++;
                 return {
                     data: [
                         { url: 'https://cdn.example.com/top-grid.jpg', width: 600, height: 900 },
@@ -131,6 +264,7 @@ describe('Steam provider', () => {
         });
 
         expect(results[0]?.image).toBe('https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/10/library_600x900.jpg');
+        expect(steamGridDbCalls).toBe(0);
     });
 
     it('uses SteamGridDB poster in Steam details when configured', async () => {

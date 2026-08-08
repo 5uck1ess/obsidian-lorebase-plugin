@@ -43,7 +43,7 @@ export function createMediaTabs<T extends string>(
         if (focus) buttons.get(value)?.focus();
     };
 
-    options.forEach((option, index) => {
+    options.forEach((option) => {
         const button = tabList.createEl('button', {
             cls: 'lorebase-media-tab',
             attr: {

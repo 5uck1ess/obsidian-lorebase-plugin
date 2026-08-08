@@ -1,10 +1,10 @@
-import { App, TFile, requestUrl } from 'obsidian';
+import { App, TFile } from 'obsidian';
 import { DEFAULT_SETTINGS } from '../constants';
 import type { GameStatus, LorebaseSettings, SteamSyncSettings } from '../types';
 import { ChoiceModal } from '../modals/IntegrationModals';
 import type { GameDetails } from './integrations/types';
 import { getSteamDetails } from './integrations/providers/steam';
-import { buildSimpleTemplate, getDefaultTemplateFields, renderTemplate, sanitizeFileName } from './integrations/templateUtils';
+import { buildSimpleTemplate, getDefaultTemplateFields, getEffectiveSimpleTemplateFields, renderTemplate, sanitizeFileName } from './integrations/templateUtils';
 import { extractYear } from './integrations/providers/common';
 import type { JsonFetcher } from './integrations/providers/common';
 import { localizeTemplateImages } from './integrations/imageStorage';
@@ -13,10 +13,13 @@ import {
     ensureFolder,
     fetchHowLongToBeatValues,
     fetchJson,
+    fetchText as fetchIntegrationText,
     getJsonFetcher,
     imageUrlExists,
+    isProviderBlockedError,
     shouldLoadHowLongToBeat,
 } from './integrations/shared';
+import { recordIntegrationDiagnostic } from './integrations/diagnostics';
 
 export interface SteamOwnedGame {
     appId: number;
@@ -46,10 +49,82 @@ export interface SteamSyncResult {
     failed: number;
 }
 
+export type SteamSyncItemOutcome = 'created' | 'updated' | 'skipped' | 'failed';
+
+export interface SteamSyncItemResult {
+    appId: number;
+    name: string;
+    outcome: SteamSyncItemOutcome;
+    durationMs: number;
+    detail?: string;
+}
+
+export class SteamSyncController {
+    private paused = false;
+    private cancelled = false;
+    private waiters = new Set<() => void>();
+    private listeners = new Set<() => void>();
+
+    pause(): void {
+        if (this.cancelled || this.paused) return;
+        this.paused = true;
+        this.notify();
+    }
+
+    resume(): void {
+        if (!this.paused) return;
+        this.paused = false;
+        this.releaseWaiters();
+        this.notify();
+    }
+
+    cancel(): void {
+        if (this.cancelled) return;
+        this.cancelled = true;
+        this.paused = false;
+        this.releaseWaiters();
+        this.notify();
+    }
+
+    isPaused(): boolean {
+        return this.paused;
+    }
+
+    isCancelled(): boolean {
+        return this.cancelled;
+    }
+
+    async waitIfPaused(): Promise<void> {
+        while (this.paused && !this.cancelled) {
+            await new Promise<void>((resolve) => this.waiters.add(resolve));
+        }
+    }
+
+    onChange(listener: () => void): () => void {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+
+    private releaseWaiters(): void {
+        const waiters = [...this.waiters];
+        this.waiters.clear();
+        waiters.forEach((resolve) => resolve());
+    }
+
+    private notify(): void {
+        this.listeners.forEach((listener) => listener());
+    }
+}
+
 export interface SteamSyncOptions {
     onProgress?: (message: string) => void;
+    onItemStart?: (candidate: SteamImportCandidate, index: number, total: number) => void;
+    onItemResult?: (item: SteamSyncItemResult) => void;
+    onHalt?: (reason: 'cancelled' | 'blocked') => void;
     confirmDuplicateUpdate?: (count: number) => Promise<boolean>;
     selectedAppIds?: Set<number>;
+    candidates?: SteamImportCandidate[];
+    control?: SteamSyncController;
 }
 
 type JsonMap = Record<string, unknown>;
@@ -202,7 +277,9 @@ export class SteamSyncService {
         const result: SteamSyncResult = { created: 0, updated: 0, skipped: 0, failed: 0 };
         options.onProgress?.('Loading Steam data...');
 
-        const allCandidates = await this.loadCandidates(steamSettings);
+        const allCandidates = options.candidates
+            ? options.candidates.map((candidate) => ({ ...candidate }))
+            : await this.loadCandidates(steamSettings);
         const candidates = options.selectedAppIds
             ? allCandidates.filter((candidate) => options.selectedAppIds?.has(candidate.appId))
             : allCandidates;
@@ -219,10 +296,38 @@ export class SteamSyncService {
         const template = this.getGameTemplate(settings);
         await ensureFolder(this.app, settings.games.folderPath);
 
-        for (const candidate of candidates) {
+        let halted = false;
+        for (let index = 0; index < candidates.length; index++) {
+            const candidate = candidates[index];
+            if (options.control?.isCancelled()) {
+                options.onHalt?.('cancelled');
+                halted = true;
+                break;
+            }
+            await options.control?.waitIfPaused();
+            if (options.control?.isCancelled()) {
+                options.onHalt?.('cancelled');
+                halted = true;
+                break;
+            }
+
+            const itemStartedAt = Date.now();
+            options.onItemStart?.(candidate, index, candidates.length);
             try {
                 options.onProgress?.(`Importing ${candidate.name}...`);
                 const duplicate = this.findDuplicate(candidate, existingIndex);
+                if (duplicate && !updateDuplicates) {
+                    result.skipped++;
+                    this.emitItemResult(
+                        candidate,
+                        'skipped',
+                        itemStartedAt,
+                        options,
+                        this.getDuplicateSkippedReason(settings.language)
+                    );
+                    continue;
+                }
+
                 const details = await this.enrichGame(candidate.appId, settings) ?? this.buildFallbackDetails(candidate);
                 if (/^Steam App \d+$/.test(candidate.name) && details.name && details.name !== 'Unknown') {
                     candidate.name = details.name;
@@ -230,12 +335,9 @@ export class SteamSyncService {
                 const game = this.toSyncGame(candidate, details, steamSettings);
 
                 if (duplicate) {
-                    if (!updateDuplicates) {
-                        result.skipped++;
-                        continue;
-                    }
                     await this.updateExistingGame(duplicate, game, steamSettings);
                     result.updated++;
+                    this.emitItemResult(candidate, 'updated', itemStartedAt, options);
                     continue;
                 }
 
@@ -248,13 +350,89 @@ export class SteamSyncService {
                     this.addFileToIndex(createdFile, existingIndex);
                 }
                 result.created++;
+                this.emitItemResult(candidate, 'created', itemStartedAt, options);
             } catch (error) {
                 console.error('[Steam Sync] Failed to import game', candidate, error);
                 result.failed++;
+                this.emitItemResult(candidate, 'failed', itemStartedAt, options, undefined, error);
+                if (isProviderBlockedError(error)) {
+                    this.addWarning(error instanceof Error
+                        ? error.message
+                        : 'Steam temporarily blocked requests. The remaining imports were paused.');
+                    options.onHalt?.('blocked');
+                    halted = true;
+                    break;
+                }
             }
         }
 
+        if (!halted && options.control?.isCancelled()) {
+            options.onHalt?.('cancelled');
+        }
         return result;
+    }
+
+    private emitItemResult(
+        candidate: SteamImportCandidate,
+        outcome: SteamSyncItemOutcome,
+        startedAt: number,
+        options: SteamSyncOptions,
+        detail?: string,
+        error?: unknown
+    ): void {
+        const errorMessage = this.describeSyncError(error);
+        const safeDetail = errorMessage ?? detail;
+        const item: SteamSyncItemResult = {
+            appId: candidate.appId,
+            name: candidate.name,
+            outcome,
+            durationMs: Math.max(0, Date.now() - startedAt),
+            detail: safeDetail,
+        };
+        options.onItemResult?.(item);
+        recordIntegrationDiagnostic({
+            url: `https://store.steampowered.com/app/${candidate.appId}/`,
+            origin: 'https://store.steampowered.com',
+            method: 'GET',
+            status: outcome === 'failed' ? 0 : 200,
+            outcome: outcome === 'failed' ? 'error' : outcome,
+            durationMs: item.durationMs,
+            attempt: 1,
+            kind: 'process',
+            operation: 'Steam Sync',
+            itemLabel: candidate.name,
+            itemId: String(candidate.appId),
+            detail: safeDetail,
+        });
+    }
+
+    private getDuplicateSkippedReason(language: LorebaseSettings['language']): string {
+        if (language === 'ru') {
+            return 'Игра уже есть в LOREBASE; в настройках дубликатов выбран режим «Пропускать».';
+        }
+        if (language === 'uk') {
+            return 'Гра вже є в LOREBASE; у налаштуваннях дублікатів вибрано режим «Пропускати».';
+        }
+        return 'The game already exists in LOREBASE; duplicate mode is set to Skip.';
+    }
+
+    private describeSyncError(error: unknown): string | undefined {
+        const raw = error instanceof Error
+            ? error.message
+            : typeof error === 'string'
+                ? error
+                : '';
+        if (!raw) return undefined;
+        return raw
+            .replace(/https?:\/\/[^\s)]+/gi, '[request URL omitted]')
+            .replace(
+                /\b(api[_ -]?key|token|authorization|client[_ -]?secret|password)\b\s*[:=]\s*[^\s,;]+/gi,
+                '$1=[hidden]'
+            )
+            .replace(/[\u0000-\u001f\u007f]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 240);
     }
 
     consumeWarnings(): string[] {
@@ -499,12 +677,7 @@ export class SteamSyncService {
         const rawValues = await this.buildTemplateValues(game, settings, allSettings);
         const title = this.toString(rawValues.name) || game.details.name || game.name || 'Untitled';
         const values = await localizeTemplateImages(this.app, 'games', title, rawValues, allSettings.integrations?.imageStorage, template);
-        const rendered = renderTemplate(template, values);
-        return this.injectFrontmatterFields(rendered, {
-            steamAppId: game.appId,
-            playtime: settings.fields.playtime ? game.playtimeForever : undefined,
-            status: game.status,
-        });
+        return renderTemplate(template, values);
     }
 
     private async buildTemplateValues(
@@ -528,10 +701,11 @@ export class SteamSyncService {
             platforms: details.platforms,
             developers: details.developers,
             publishers: details.publishers,
-            rating: details.rating,
+            rating: this.toNumber(details.rating),
+            userRating: 0,
             metacritic: details.metacritic,
             released: settings.fields.releaseDate ? details.released : '',
-            Year: settings.fields.releaseDate ? details.year : extractYear(details.released),
+            Year: this.toNumber(settings.fields.releaseDate ? details.year : extractYear(details.released)),
             url: details.url || `https://store.steampowered.com/app/${game.appId}/`,
             status: game.status,
             playtime: settings.fields.playtime ? game.playtimeForever : '',
@@ -540,6 +714,8 @@ export class SteamSyncService {
             main_plus_sides: hltb?.main_plus_sides ?? '',
             perfectionist: hltb?.perfectionist ?? '',
             completionist: hltb?.perfectionist ?? '',
+            integrationProvider: 'steam',
+            integrationId: game.appId,
         };
     }
 
@@ -633,59 +809,10 @@ export class SteamSyncService {
         const mode = media.templateMode ?? 'advanced';
         if (mode === 'advanced') return media.template;
 
-        const selected = media.templateFields?.length ? media.templateFields : getDefaultTemplateFields('games');
-        const filtered = media.howLongToBeatEnabled
-            ? Array.from(new Set([...selected, 'main', 'main_plus_sides', 'perfectionist']))
-            : selected.filter((key) => key !== 'main' && key !== 'main_plus_sides' && key !== 'perfectionist' && key !== 'completionist');
-        return buildSimpleTemplate('games', filtered);
-    }
-
-    private injectFrontmatterFields(content: string, fields: Record<string, unknown>): string {
-        const lines = content.split(/\r?\n/);
-        if (lines[0]?.trim() !== '---') {
-            const frontmatter = this.serializeFrontmatterFields(fields);
-            return frontmatter ? `---\n${frontmatter}\n---\n${content}` : content;
-        }
-
-        const closingIndex = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
-        if (closingIndex === -1) {
-            const frontmatter = this.serializeFrontmatterFields(fields);
-            return frontmatter ? `${content}\n${frontmatter}` : content;
-        }
-
-        const existingKeys = new Set<string>();
-        for (let index = 1; index < closingIndex; index++) {
-            const match = lines[index].match(/^([A-Za-z0-9_-]+):/);
-            if (match) existingKeys.add(match[1]);
-        }
-
-        const additions = this.serializeFrontmatterFields(fields, existingKeys);
-        if (!additions) return content;
-
-        lines.splice(closingIndex, 0, ...additions.split('\n'));
-        return lines.join('\n');
-    }
-
-    private serializeFrontmatterFields(fields: Record<string, unknown>, existingKeys: Set<string> = new Set()): string {
-        const lines: string[] = [];
-        for (const [key, value] of Object.entries(fields)) {
-            if (existingKeys.has(key)) continue;
-            if (value === null || value === undefined || value === '') continue;
-            if (Array.isArray(value)) {
-                if (value.length === 0) continue;
-                lines.push(`${key}:`);
-                for (const item of value) {
-                    lines.push(`  - "${this.escapeYaml(String(item))}"`);
-                }
-                continue;
-            }
-            if (typeof value === 'number' || typeof value === 'boolean') {
-                lines.push(`${key}: ${value}`);
-                continue;
-            }
-            lines.push(`${key}: "${this.escapeYaml(String(value))}"`);
-        }
-        return lines.join('\n');
+        const selected = Array.isArray(media.templateFields) ? media.templateFields : getDefaultTemplateFields('games');
+        return buildSimpleTemplate('games', getEffectiveSimpleTemplateFields('games', selected, {
+            howLongToBeatEnabled: Boolean(media.howLongToBeatEnabled)
+        }));
     }
 
     private getUniquePath(folderPath: string, title: string): string {
@@ -748,19 +875,11 @@ export class SteamSyncService {
     }
 
     private async fetchText(url: string): Promise<string> {
-        let response: Awaited<ReturnType<typeof requestUrl>>;
-        try {
-            response = await requestUrl({ url, method: 'GET' });
-        } catch (error) {
-            if (this.isStatusError(error, 429)) {
-                throw new Error('Steam request was rate limited.');
-            }
-            throw error;
-        }
-        return response.text ?? '';
+        return fetchIntegrationText(url);
     }
 
     private isRecoverableWishlistError(error: unknown): boolean {
+        if (isProviderBlockedError(error)) return true;
         if (this.isHtmlJsonError(error)) return true;
         return error instanceof Error && error.message.toLowerCase().includes('rate limited');
     }
@@ -770,9 +889,15 @@ export class SteamSyncService {
     }
 
     private isStatusError(error: unknown, status: number): boolean {
+        if (error && typeof error === 'object') {
+            const value = error as { status?: unknown; statusCode?: unknown };
+            if (value.status === status || value.statusCode === status) return true;
+        }
         if (!(error instanceof Error)) return false;
         const message = error.message.toLowerCase();
-        return message.includes(`status ${status}`) || message.includes(`status: ${status}`);
+        return message.includes(`status ${status}`)
+            || message.includes(`status: ${status}`)
+            || message.includes(`http ${status}`);
     }
 
     private asObject(value: unknown): JsonMap | null {
@@ -793,13 +918,10 @@ export class SteamSyncService {
     private toNumber(value: unknown): number {
         if (typeof value === 'number' && Number.isFinite(value)) return value;
         if (typeof value === 'string') {
-            const parsed = Number(value);
+            const parsed = Number.parseFloat(value.trim());
             return Number.isFinite(parsed) ? parsed : 0;
         }
         return 0;
     }
 
-    private escapeYaml(value: string): string {
-        return value.replace(/"/g, '\\"');
-    }
 }

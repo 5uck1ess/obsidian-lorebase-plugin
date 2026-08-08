@@ -4,13 +4,18 @@ import { getAniListMangaDetails, searchAniListManga } from '../src/services/inte
 import type { JsonFetcher } from '../src/services/integrations/providers/common';
 import { getGoogleBooksDetails, searchGoogleBooks } from '../src/services/integrations/providers/googlebooks';
 import { getHardcoverBookDetails, searchHardcoverBooks } from '../src/services/integrations/providers/hardcover';
-import { getJikanMangaDetails, searchJikanManga } from '../src/services/integrations/providers/jikan';
+import {
+    getMangaUpdatesDetails,
+    resetMangaUpdatesCachesForTests,
+    searchMangaUpdates,
+} from '../src/services/integrations/providers/mangaupdates';
 import { getMangaDexDetails, searchMangaDex } from '../src/services/integrations/providers/mangadex';
 import { getShikimoriMangaDetails, searchShikimoriManga } from '../src/services/integrations/providers/shikimori';
 
 describe('reading providers', () => {
     afterEach(() => {
         __setRequestUrlMock(null);
+        resetMangaUpdatesCachesForTests();
     });
 
     it('maps Hardcover search and GraphQL book details', async () => {
@@ -249,113 +254,118 @@ describe('reading providers', () => {
         expect(details?.parts).toHaveLength(41);
     });
 
-    it('maps Jikan manga search/details and tolerates empty failure payloads', async () => {
-        const empty = await searchJikanManga(async () => ({ status: 504, message: 'timeout' }), 'berserk');
-        expect(empty).toEqual([]);
-
-        const fetchJson: JsonFetcher = async (url) => {
-            if (url.includes('/manga?')) {
+    it('maps MangaUpdates manga search and details', async () => {
+        const calls: Array<{ url: string; method?: string; body?: string }> = [];
+        const fetchJson: JsonFetcher = async (url, _headers, method, body) => {
+            calls.push({ url, method, body });
+            if (url.endsWith('/series/search')) {
                 return {
-                    pagination: { has_next_page: false },
-                    data: [
-                        {
-                            mal_id: 2,
+                    total_hits: 1,
+                    page: 1,
+                    per_page: 25,
+                    results: [{
+                        record: {
+                            series_id: 512,
                             title: 'Berserk',
-                            title_japanese: 'Berserk',
                             type: 'Manga',
-                            images: { jpg: { large_image_url: 'https://cdn.example/berserk.jpg' } },
-                            published: { from: '1989-08-25T00:00:00+00:00' },
+                            year: '1989',
+                            image: { url: { original: 'https://cdn.example/berserk.jpg' } },
                         },
-                    ],
+                        hit_title: 'Berserk',
+                    }],
                 };
             }
             return {
-                data: {
-                    mal_id: 2,
-                    title: 'Berserk',
-                    synopsis: '<p>Dark fantasy.</p>',
-                    score: 9.3,
-                    chapters: 364,
-                    volumes: 41,
-                    url: 'https://myanimelist.net/manga/2',
-                    images: { jpg: { large_image_url: 'https://cdn.example/berserk.jpg' } },
-                    published: { from: '1989-08-25T00:00:00+00:00' },
-                    authors: [{ name: 'Kentaro Miura' }],
-                    genres: [{ name: 'Action' }],
-                    themes: [{ name: 'Gore' }],
-                    demographics: [{ name: 'Seinen' }],
-                },
+                series_id: 512,
+                title: 'Berserk',
+                description: 'Dark fantasy.',
+                type: 'Manga',
+                year: '1989',
+                latest_chapter: 386,
+                status: '43 Volumes (Ongoing)',
+                bayesian_rating: 8.98,
+                rating_votes: 3722,
+                url: 'https://www.mangaupdates.com/series/512/berserk',
+                image: { url: { original: 'https://cdn.example/berserk.jpg' } },
+                authors: [
+                    { name: 'Miura Kentarou', type: 'Author' },
+                    { name: 'Miura Kentarou', type: 'Artist' },
+                ],
+                genres: [{ genre: 'Action' }, { genre: 'Adult' }, { genre: 'Seinen' }],
             };
         };
 
-        const results = await searchJikanManga(fetchJson, 'berserk');
-        const details = await getJikanMangaDetails(fetchJson, results[0].id);
+        const results = await searchMangaUpdates(fetchJson, 'berserk');
+        const details = await getMangaUpdatesDetails(fetchJson, results[0].id);
 
-        expect(results[0]).toMatchObject({ id: '2', title: 'Berserk', provider: 'jikan' });
+        expect(calls[0]).toMatchObject({
+            url: 'https://api.mangaupdates.com/v1/series/search',
+            method: 'POST',
+        });
+        expect(JSON.parse(calls[0].body ?? '{}')).toMatchObject({ search: 'berserk', page: 1, perpage: 25 });
+        expect(results[0]).toMatchObject({ id: '512', title: 'Berserk', provider: 'mangaupdates' });
         expect(details).toMatchObject({
             kind: 'manga',
             name: 'Berserk',
-            authors: ['Kentaro Miura'],
-            chapters: '364',
-            volumes: '41',
-            rating: '9.3',
+            authors: ['Miura Kentarou'],
+            artists: ['Miura Kentarou'],
+            chapters: '386',
+            volumes: '43',
+            rating: '8.98',
+            communityVotes: '3722',
+            isAdult: true,
         });
-        expect(details?.genres).toEqual(['Action', 'Gore', 'Seinen']);
-        expect(details?.parts).toHaveLength(41);
+        expect(details?.genres).toEqual(['Action', 'Adult', 'Seinen']);
+        expect(details?.parts).toHaveLength(43);
     });
 
-    it('maps Jikan numeric search through details endpoint', async () => {
+    it('maps MangaUpdates numeric search through the series endpoint', async () => {
         const calls: string[] = [];
-        const results = await searchJikanManga(async (url) => {
+        const results = await searchMangaUpdates(async (url) => {
             calls.push(url);
             return {
-                data: {
-                    mal_id: 2,
-                    title: 'Berserk',
-                    score: 9.3,
-                    chapters: 364,
-                    volumes: 41,
-                    images: { jpg: { large_image_url: 'https://cdn.example/berserk.jpg' } },
-                    published: { from: '1989-08-25T00:00:00+00:00' },
-                    authors: [{ name: 'Kentaro Miura' }],
-                },
+                series_id: 512,
+                title: 'Berserk',
+                year: '1989',
+                status: '43 Volumes (Ongoing)',
+                image: { url: { original: 'https://cdn.example/berserk.jpg' } },
+                authors: [{ name: 'Miura Kentarou', type: 'Author' }],
             };
-        }, '2');
+        }, '512');
 
-        expect(calls).toEqual(['https://api.jikan.moe/v4/manga/2']);
+        expect(calls).toEqual(['https://api.mangaupdates.com/v1/series/512']);
         expect(results[0]).toMatchObject({
-            id: '2',
+            id: '512',
             title: 'Berserk',
-            provider: 'jikan',
+            provider: 'mangaupdates',
             image: 'https://cdn.example/berserk.jpg',
             year: '1989',
         });
     });
 
-    it('falls back to MyAnimeList page when Jikan manga search is unavailable', async () => {
-        __setRequestUrlMock(() => ({
-            text: `
-                <tr>
-                    <td><a href="https://myanimelist.net/manga/2/Berserk" data-l-content-id="2" data-l-content-type="manga">
-                        <img alt="Berserk" data-src="https://cdn.myanimelist.net/r/50x70/images/manga/1/157897.jpg?s=x" />
-                    </a></td>
-                    <td><a href="https://myanimelist.net/manga/2/Berserk"><strong>Berserk</strong></a></td>
-                    <td class="borderClass ac bgColor0">Manga</td>
-                </tr>
-            `,
-        }));
+    it('caches MangaUpdates search and title details', async () => {
+        let searchCalls = 0;
+        let detailCalls = 0;
+        const fetchJson: JsonFetcher = async (url) => {
+            if (url.endsWith('/series/search')) {
+                searchCalls++;
+                return { total_hits: 0, results: [] };
+            }
+            detailCalls++;
+            return {
+                series_id: 512,
+                title: 'Berserk',
+                status: '43 Volumes (Ongoing)',
+            };
+        };
 
-        const results = await searchJikanManga(async () => {
-            throw new Error('Request failed, status 504');
-        }, 'berserk');
+        await searchMangaUpdates(fetchJson, 'berserk');
+        await searchMangaUpdates(fetchJson, 'BERSERK');
+        await getMangaUpdatesDetails(fetchJson, '512');
+        await getMangaUpdatesDetails(fetchJson, '512');
 
-        expect(results[0]).toMatchObject({
-            id: '2',
-            title: 'Berserk',
-            provider: 'jikan',
-            image: 'https://cdn.myanimelist.net/images/manga/1/157897.jpg',
-            format: 'Manga',
-        });
+        expect(searchCalls).toBe(1);
+        expect(detailCalls).toBe(1);
     });
 
     it('maps MangaDex covers and aggregate volumes', async () => {

@@ -5,7 +5,8 @@ export function hasActiveFilters(filter: FilterState): boolean {
         filter.statuses.length > 0 ||
         filter.favoriteOnly ||
         filter.adultOnly ||
-        filter.customOnly
+        filter.customOnly ||
+        Boolean(filter.rules?.length)
     );
 }
 

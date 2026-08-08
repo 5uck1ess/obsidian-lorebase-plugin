@@ -37,6 +37,9 @@ export type MediaStatus = GameStatus | AnimeStatus;
 /** Top-level settings page presentation */
 export type SettingsLayoutMode = 'tabs' | 'accordion';
 
+/** Primary action when a library card is clicked */
+export type CardClickAction = 'open' | 'edit';
+
 /** User-defined visible label overrides for fixed status values */
 export type StatusLabelSettings = {
     games: Partial<Record<GameStatus, string>>;
@@ -58,6 +61,27 @@ export interface TagPreset {
 /** Preset groups for media tags */
 interface TagPresetSettings {
     games: TagPreset[];
+}
+
+/** Existing-note import write behavior */
+export type NoteImportWriteMode = 'copy' | 'replace';
+
+/** Existing-note import target library */
+export type NoteImportTargetMedia = 'auto' | 'games' | 'anime' | 'movies' | 'series' | 'books' | 'manga';
+
+/** User-editable frontmatter alias mapping for existing-note import */
+export interface NoteImportFieldMapping {
+    key: string;
+    aliases: string[];
+}
+
+/** Settings for importing existing Markdown media notes into LOREBASE */
+export interface NoteImportSettings {
+    sourceFolderPath: string;
+    targetMedia: NoteImportTargetMedia;
+    writeMode: NoteImportWriteMode;
+    fieldMappings: NoteImportFieldMapping[];
+    blacklist: string[];
 }
 
 /** Trackable part of a single anime title: TV season, OVA, special, movie, etc. */
@@ -104,6 +128,13 @@ export interface RelatedMediaLink {
 /** User rating from 1-5 */
 export type UserRating = 1 | 2 | 3 | 4 | 5 | null;
 
+/** Provider/community score stored in note frontmatter */
+export interface CommunityRating {
+    provider: string;
+    rating: number | null;
+    votes: number | null;
+}
+
 /** Card size options */
 export type CardSize = 'small' | 'medium' | 'large';
 
@@ -113,11 +144,84 @@ export type CardOrientation = 'vertical' | 'horizontal';
 /** Card visual style */
 export type CardStyle = 'hover' | 'progress';
 
-/** Sort field options */
-export type SortField = 'name' | 'series' | 'year' | 'rating' | 'dateCompleted';
+/** Sort field options. dateCompleted is retained as a persisted-settings alias. */
+export type SortField =
+    | 'name'
+    | 'series'
+    | 'year'
+    | 'rating'
+    | 'dateStarted'
+    | 'dateFinished'
+    | 'dateCompleted'
+    | `yaml:${string}`;
 
 /** Sort order */
 export type SortOrder = 'asc' | 'desc';
+
+export type LibraryFieldType = 'text' | 'number' | 'date' | 'boolean' | 'list';
+
+export type FilterOperator =
+    | 'contains'
+    | 'equals'
+    | 'notEquals'
+    | 'empty'
+    | 'notEmpty'
+    | 'greater'
+    | 'less'
+    | 'between'
+    | 'isTrue'
+    | 'isFalse'
+    | 'containsAny'
+    | 'containsAll'
+    | 'notContains'
+    | 'thisMonth'
+    | 'thisYear';
+
+export interface FilterRule {
+    id: string;
+    field: string;
+    fieldType: LibraryFieldType;
+    operator: FilterOperator;
+    value?: string | number | boolean | string[] | null;
+    valueTo?: string | number | null;
+}
+
+export interface FieldDefinition {
+    id: string;
+    label: string;
+    icon: string;
+    type: LibraryFieldType;
+    source: 'builtin' | 'yaml';
+    operators: FilterOperator[];
+    options?: Array<{ value: string; label: string }>;
+}
+
+export type GroupMode = 'none' | 'series' | 'finishedMonth' | 'finishedYear';
+
+export interface GroupSpec {
+    mode: GroupMode;
+    order: SortOrder;
+}
+
+export interface SortSpec {
+    field: SortField;
+    order: SortOrder;
+}
+
+export interface LibraryViewState {
+    sort: SortSpec;
+    group: GroupSpec;
+    rules: FilterRule[];
+    tags: string[];
+    genres: string[];
+}
+
+export interface SavedLibraryView {
+    id: string;
+    name: string;
+    state: LibraryViewState;
+    readonly?: boolean;
+}
 
 /** View mode */
 export type ViewMode = 'grid' | 'horizontal';
@@ -139,6 +243,19 @@ export type BadgePosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-r
 
 /** Rating badge render mode */
 export type RatingBadgeMode = 'star' | 'emoji';
+
+/** Completion date format rendered on the status badge */
+export type CompletionDateBadgeFormat = 'short' | 'full';
+
+/** Completion date badge format per media library */
+interface CompletionDateBadgeFormatSettings {
+    games: CompletionDateBadgeFormat;
+    anime: CompletionDateBadgeFormat;
+    movies: CompletionDateBadgeFormat;
+    series: CompletionDateBadgeFormat;
+    books: CompletionDateBadgeFormat;
+    manga: CompletionDateBadgeFormat;
+}
 
 /** Hover overlay text offset */
 interface OverlayTextOffset {
@@ -215,6 +332,20 @@ interface BaseMediaItem {
     hasCustomPoster: boolean;
     /** Is adult content (18+) */
     isAdult: boolean;
+    /** Community/provider rating such as AniList, MAL, TMDB, RAWG */
+    communityRating?: number | null;
+    /** Number of votes behind the community/provider rating */
+    communityVotes?: number | null;
+    /** Provider label for community rating */
+    communityRatingProvider?: string | null;
+    /** Markdown body section stored under ## My Notes */
+    myNotes?: string;
+    /** Date started in YYYY-MM-DD form */
+    started?: string | null;
+    /** Date finished in YYYY-MM-DD form */
+    finished?: string | null;
+    /** Scalar frontmatter fields available to the view rule engine */
+    rawFields?: Record<string, string | number | boolean | string[] | null>;
 }
 
 /** Game-specific item */
@@ -226,6 +357,10 @@ export interface GameItem extends BaseMediaItem {
     gameSeries: string;
     /** Date completed (from frontmatter, if available) */
     dateCompleted: number | null;
+    /** Date started in YYYY-MM-DD form */
+    started?: string | null;
+    /** Date finished in YYYY-MM-DD form */
+    finished?: string | null;
     /** Release date stored in frontmatter */
     releaseDate?: string | null;
     /** Publisher stored in frontmatter */
@@ -236,6 +371,30 @@ export interface GameItem extends BaseMediaItem {
     tags: string[];
     /** Genre tags (separate field) */
     genres: string[];
+    /** Supported game platforms */
+    platforms?: string[];
+    /** Optional source URL */
+    sourceUrl?: string | null;
+    /** Metadata provider used to create/update game details */
+    integrationProvider?: 'rawg' | 'steam' | 'igdb' | null;
+    /** Provider-specific game id used to refresh community rating */
+    integrationId?: string | null;
+    /** Steam app id from Steam Sync or integration metadata */
+    steamAppId?: string | null;
+    /** Downloadable content attached to this game */
+    dlc?: GameDlc[];
+    /** Locally linked media notes */
+    relatedMedia?: RelatedMediaLink[];
+}
+
+export interface GameDlc {
+    id: string;
+    provider: 'steam' | 'igdb';
+    title: string;
+    imageUrl?: string | null;
+    url?: string | null;
+    userRating?: UserRating;
+    owned?: boolean;
 }
 
 /** Anime-specific item */
@@ -257,6 +416,8 @@ export interface AnimeItem extends BaseMediaItem {
     episodeTotal: number | null;
     /** Genres */
     genres: string[];
+    /** Animation studios */
+    studios?: string[];
     /** Date added (from frontmatter or file stats) */
     dateAdded: number;
     /** Date watched (from frontmatter) */
@@ -266,7 +427,7 @@ export interface AnimeItem extends BaseMediaItem {
     /** Optional source URL */
     sourceUrl?: string | null;
     /** Metadata provider used to create/update anime composition */
-    integrationProvider?: 'anilist' | 'shikimori' | null;
+    integrationProvider?: 'anilist' | 'jikan' | 'shikimori' | null;
     /** Provider-specific anime id used to refresh anime composition */
     integrationId?: string | null;
     /** Trackable seasons/OVA/specials for this title */
@@ -356,7 +517,8 @@ export interface MangaItem extends BaseMediaItem {
     dateAdded: number;
     lastModified: number;
     sourceUrl?: string | null;
-    integrationProvider?: 'anilist' | 'shikimori' | 'jikan' | 'mangadex' | null;
+    /** Metadata provider. `jikan` is accepted only for legacy manga notes that still use a MAL id. */
+    integrationProvider?: 'anilist' | 'jikan' | 'shikimori' | 'mangaupdates' | 'mangadex' | null;
     integrationId?: string | null;
     parts?: MangaPart[];
     activePartId?: string | null;
@@ -405,6 +567,12 @@ interface LibrarySettings {
     sortField: SortField;
     /** Current sort order */
     sortOrder: SortOrder;
+    /** Last active unified library view state */
+    viewState: LibraryViewState;
+    /** Named views scoped to this media library */
+    savedViews: SavedLibraryView[];
+    /** Currently selected named view, or null for an unsaved state */
+    activeSavedViewId: string | null;
     /** Show 18+ content in 'all' mode */
     showAdultInAll: boolean;
 }
@@ -419,6 +587,12 @@ export interface LorebaseSettings {
     accentColor: string;
     /** Show provider/manual choice before opening the add flow */
     showAddModeChoice: boolean;
+    /** Primary action when a library card is clicked */
+    cardClickAction: CardClickAction;
+    /** Legacy fallback date format in status badge while sorting by completion date */
+    completionDateBadgeFormat: CompletionDateBadgeFormat;
+    /** Date format in status badge while sorting by completion date, per media type */
+    completionDateBadgeFormats: CompletionDateBadgeFormatSettings;
     /** Enabled media types */
     enabledMedia: {
         games: boolean;
@@ -534,9 +708,17 @@ export interface LorebaseSettings {
     statusLabels: StatusLabelSettings;
     /** Managed tag presets shown as planning chips */
     tagPresets: TagPresetSettings;
+    /** Existing Markdown note import settings */
+    noteImport: NoteImportSettings;
     /** Internal one-time settings migrations */
     migrations?: {
         animeProgressCardStyle?: boolean;
+        templateTypeField?: boolean;
+        gameTemplateTypeField?: boolean;
+        mangaTemplateAdultField?: boolean;
+        gameDefaultVisibilityFilters?: boolean;
+        /** One-time migration from the removed Jikan manga search provider. */
+        jikanMangaProviderV1?: boolean;
     };
     /** Games library settings */
     games: LibrarySettings;
@@ -565,7 +747,7 @@ interface IntegrationProviderSettings {
 
 /** Media template settings */
 export interface IntegrationTemplateSettings {
-    provider: 'rawg' | 'steam' | 'igdb' | 'anilist' | 'shikimori' | 'tmdb' | 'tvmaze' | 'omdb' | 'hardcover' | 'googlebooks' | 'jikan' | 'mangadex';
+    provider: 'rawg' | 'steam' | 'igdb' | 'anilist' | 'jikan' | 'shikimori' | 'tmdb' | 'tvmaze' | 'omdb' | 'hardcover' | 'googlebooks' | 'mangaupdates' | 'mangadex';
     templateEnabled: boolean;
     templateMode?: TemplateMode;
     templateFields?: string[];
@@ -582,6 +764,8 @@ export interface IntegrationImageStorageSettings {
 /** Integrations */
 interface IntegrationsSettings {
     enabled: boolean;
+    /** Delay between selected-item imports to avoid provider rate limits */
+    requestCooldownSeconds: number;
     imageStorage: IntegrationImageStorageSettings;
     providers: {
         rawg: IntegrationProviderSettings;
@@ -589,13 +773,14 @@ interface IntegrationsSettings {
         steamgriddb: IntegrationProviderSettings;
         igdb: IntegrationProviderSettings;
         anilist: IntegrationProviderSettings;
+        jikan: IntegrationProviderSettings;
         shikimori: IntegrationProviderSettings;
         tmdb: IntegrationProviderSettings;
         tvmaze: IntegrationProviderSettings;
         omdb: IntegrationProviderSettings;
         hardcover: IntegrationProviderSettings;
         googlebooks: IntegrationProviderSettings;
-        jikan: IntegrationProviderSettings;
+        mangaupdates: IntegrationProviderSettings;
         mangadex: IntegrationProviderSettings;
     };
     media: {
@@ -631,11 +816,13 @@ export interface LorebasePluginInterface {
     settings: LorebaseSettings;
     app: App;
     saveSettings(): Promise<void>;
-    showEditModal(item: MediaItem, onSave: () => void): void;
+    showEditModal(item: MediaItem, onSave: () => void, onBeforeSave?: () => void): void;
     showStatsModal(stats: GameStats | AnimeStats, mediaType: MediaType): void;
     showDeleteModal(game: MediaItem, onConfirm: () => Promise<void>): void;
     addMediaItem(mediaType: MediaType): void;
     runSteamSync(): Promise<void>;
+    runNoteImport(): Promise<void>;
+    enrichMediaItem(item: MediaItem, relink?: boolean, onSave?: () => void): Promise<boolean>;
     refreshViews(): void;
     getGameService(): GameService | null;
     getAnimeService(): AnimeService | null;
@@ -645,6 +832,8 @@ export interface LorebasePluginInterface {
     getBookService(): ReadingService | null;
     getMangaService(): ReadingService | null;
     getMediaType(): MediaType;
+    getEnabledMediaTypes(): MediaType[];
+    switchMediaType(mediaType: MediaType): Promise<void>;
 }
 
 // =============================================================================
@@ -667,6 +856,8 @@ export interface FilterState {
     tags: string[];
     /** Selected genres */
     genres: string[];
+    /** Extensible field rules combined with AND */
+    rules?: FilterRule[];
 }
 
 /** Statistics for game collection */

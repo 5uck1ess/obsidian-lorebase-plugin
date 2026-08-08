@@ -67,6 +67,7 @@ export class DropdownManager {
             activeDocument.removeEventListener('keydown', this.keyHandler);
             this.keyHandler = null;
         }
+
     }
 
     private toggleDropdown(panel: HTMLElement, button: HTMLButtonElement): void {
@@ -77,20 +78,47 @@ export class DropdownManager {
             panel.addClass('is-open');
             button.addClass('is-open');
             button.setAttribute('aria-expanded', 'true');
+            if (panel.hasClass('lorebase-view-panel') && window.matchMedia('(max-width: 768px)').matches) {
+                window.requestAnimationFrame(() => {
+                    panel.querySelector<HTMLElement>('select, input, button:not([disabled])')?.focus();
+                });
+            }
         }
     }
 
     private registerGlobalHandlers(): void {
         this.documentClickHandler = (event: MouseEvent) => {
             const target = event.target;
-            if (target instanceof Node && !this.root.contains(target)) {
+            const clickedInsideRoot = event.composedPath().includes(this.root)
+                || (target instanceof Node && this.root.contains(target));
+            if (!clickedInsideRoot) {
                 this.closeDropdowns();
             }
         };
 
         this.keyHandler = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
+                const trigger = this.root.querySelector<HTMLButtonElement>('.lorebase-toolbar-btn.is-open');
                 this.closeDropdowns();
+                trigger?.focus();
+                return;
+            }
+            if (event.key === 'Tab' && window.matchMedia('(max-width: 768px)').matches) {
+                const panel = this.root.querySelector<HTMLElement>('.lorebase-view-panel.is-open');
+                if (!panel) return;
+                const focusable = Array.from(panel.querySelectorAll<HTMLElement>(
+                    'button:not([disabled]), select:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )).filter((entry) => entry.offsetParent !== null);
+                if (!focusable.length) return;
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (event.shiftKey && activeDocument.activeElement === first) {
+                    event.preventDefault();
+                    last.focus();
+                } else if (!event.shiftKey && activeDocument.activeElement === last) {
+                    event.preventDefault();
+                    first.focus();
+                }
             }
         };
 

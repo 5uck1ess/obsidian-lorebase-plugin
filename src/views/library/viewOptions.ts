@@ -1,5 +1,5 @@
-import { MediaItem, MediaStatus, MediaType, SortField, StatusLabelSettings } from '../../types';
-import { t } from '../../localization';
+import { FieldDefinition, MediaItem, MediaStatus, MediaType, SortField, StatusLabelSettings } from '../../types';
+import { i18n, t } from '../../localization';
 
 export function getStatusOptionsForMediaType(
     mediaType: MediaType,
@@ -23,10 +23,11 @@ export function getStatusOptionsForMediaType(
     if (mediaType === 'anime' || mediaType === 'movie' || mediaType === 'series' || mediaType === 'book' || mediaType === 'manga') {
         const plannedLabel = mediaType === 'book' || mediaType === 'manga' ? t('statusPlanToRead') : t('statusPlanned');
         const activeLabel = mediaType === 'book' || mediaType === 'manga' ? t('statusReading') : t('statusWatching');
+        const completedLabel = mediaType === 'book' || mediaType === 'manga' ? t('statusReadCompleted') : t('statusCompleted');
         return [
             { status: 'planned', label: labelFor('planned', plannedLabel) },
             { status: 'watching', label: labelFor('watching', activeLabel) },
-            { status: 'completed', label: labelFor('completed', t('statusCompleted')) },
+            { status: 'completed', label: labelFor('completed', completedLabel) },
             { status: 'dropped', label: labelFor('dropped', t('statusDropped')) },
             { status: 'paused', label: labelFor('paused', t('statusPaused')) },
         ];
@@ -44,11 +45,15 @@ export function getStatusOptionsForMediaType(
 
 export function getSortOptionsForMediaType(mediaType: MediaType): Array<{ field: SortField; label: string }> {
     if (mediaType === 'anime' || mediaType === 'movie' || mediaType === 'series' || mediaType === 'book' || mediaType === 'manga') {
+        const dateLabel = mediaType === 'book' || mediaType === 'manga'
+            ? t('sortDateRead')
+            : t('sortDateWatched');
         return [
             { field: 'name', label: t('sortName') },
             { field: 'rating', label: t('sortRating') },
             { field: 'year', label: t('sortYear') },
-            { field: 'dateCompleted', label: t('sortDateWatched') },
+            { field: 'dateStarted', label: dateSortLabel(true) },
+            { field: 'dateFinished', label: dateLabel },
         ];
     }
 
@@ -57,15 +62,82 @@ export function getSortOptionsForMediaType(mediaType: MediaType): Array<{ field:
         { field: 'name', label: t('sortName') },
         { field: 'rating', label: t('sortRating') },
         { field: 'year', label: t('sortYear') },
-        { field: 'dateCompleted', label: t('sortDateCompleted') },
+        { field: 'dateStarted', label: dateSortLabel(true) },
+        { field: 'dateFinished', label: t('sortDateCompleted') },
     ];
+}
+
+export function getBuiltInFieldDefinitions(
+    mediaType: MediaType,
+    statuses: Array<{ status: MediaStatus; label: string }>,
+    flags: { showAdult: boolean; showCustom: boolean }
+): FieldDefinition[] {
+    const language = i18n.getLanguage();
+    const startedLabel = language === 'ru' ? 'Дата начала' : language === 'uk' ? 'Дата початку' : 'Start date';
+    const finishedLabel = language === 'ru' ? 'Дата окончания' : language === 'uk' ? 'Дата завершення' : 'Finish date';
+    const definitions: FieldDefinition[] = [
+        {
+            id: 'status', label: t('status'), icon: 'circle-dot', type: 'list', source: 'builtin',
+            operators: ['containsAny', 'notContains'],
+            options: statuses.map((entry) => ({ value: entry.status, label: entry.label })),
+        },
+        {
+            id: 'favorite', label: t('statusFavorite'), icon: 'heart', type: 'boolean', source: 'builtin',
+            operators: ['isTrue', 'isFalse'],
+        },
+        {
+            id: 'year', label: t('year'), icon: 'calendar-days', type: 'number', source: 'builtin',
+            operators: ['equals', 'greater', 'less', 'between', 'empty', 'notEmpty'],
+        },
+        {
+            id: 'rating', label: t('editRating'), icon: 'star', type: 'number', source: 'builtin',
+            operators: ['equals', 'greater', 'less', 'between', 'empty', 'notEmpty'],
+        },
+        {
+            id: 'dateStarted', label: startedLabel, icon: 'calendar-clock', type: 'date', source: 'builtin',
+            operators: ['thisMonth', 'thisYear', 'between', 'equals', 'greater', 'less', 'empty', 'notEmpty'],
+        },
+        {
+            id: 'dateFinished', label: finishedLabel, icon: 'calendar-check', type: 'date', source: 'builtin',
+            operators: ['thisMonth', 'thisYear', 'between', 'equals', 'greater', 'less', 'empty', 'notEmpty'],
+        },
+    ];
+    if (mediaType === 'game') {
+        definitions.splice(1, 0, {
+            id: 'series', label: t('sortSeries'), icon: 'layers', type: 'text', source: 'builtin',
+            operators: ['contains', 'equals', 'notEquals', 'empty', 'notEmpty'],
+        });
+    }
+    if (flags.showAdult) {
+        definitions.push({
+            id: 'adult', label: t('filterAdult'), icon: 'shield-alert', type: 'boolean', source: 'builtin',
+            operators: ['isTrue', 'isFalse'],
+        });
+    }
+    if (flags.showCustom) {
+        definitions.push({
+            id: 'custom', label: t('modeCustom'), icon: 'image', type: 'boolean', source: 'builtin',
+            operators: ['isTrue', 'isFalse'],
+        });
+    }
+    return definitions;
+}
+
+function dateSortLabel(started: boolean): string {
+    const language = i18n.getLanguage();
+    if (language === 'ru') return started ? 'Дата начала' : 'Дата окончания';
+    if (language === 'uk') return started ? 'Дата початку' : 'Дата завершення';
+    return started ? 'Date started' : 'Date finished';
 }
 
 export function getFilterFlagsForMediaType(mediaType: MediaType): { showAdult: boolean; showCustom: boolean } {
     if (mediaType === 'anime') {
         return { showAdult: false, showCustom: false };
     }
-    if (mediaType === 'movie' || mediaType === 'series' || mediaType === 'book' || mediaType === 'manga') {
+    if (mediaType === 'manga') {
+        return { showAdult: true, showCustom: false };
+    }
+    if (mediaType === 'movie' || mediaType === 'series' || mediaType === 'book') {
         return { showAdult: false, showCustom: false };
     }
     return { showAdult: true, showCustom: true };

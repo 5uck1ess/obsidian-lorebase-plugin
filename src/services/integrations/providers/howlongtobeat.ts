@@ -1,9 +1,9 @@
 import { JsonFetcher, asObject, getArray, getString } from './common';
 
 export interface HowLongToBeatTimes {
-    main: string;
-    main_plus_sides: string;
-    perfectionist: string;
+    main: number | '';
+    main_plus_sides: number | '';
+    perfectionist: number | '';
 }
 
 interface CandidateScore {
@@ -84,9 +84,9 @@ export async function getHowLongToBeatTimes(
     if (!best || best.score < 30) return null;
 
     return {
-        main: formatSecondsToDuration(best.item.comp_main),
-        main_plus_sides: formatSecondsToDuration(best.item.comp_plus),
-        perfectionist: formatSecondsToDuration(best.item.comp_100),
+        main: secondsToHours(best.item.comp_main),
+        main_plus_sides: secondsToHours(best.item.comp_plus),
+        perfectionist: secondsToHours(best.item.comp_100),
     };
 }
 
@@ -162,17 +162,10 @@ function overlapRatio(first: string[], second: string[]): number {
     return common / first.length;
 }
 
-function formatSecondsToDuration(value: unknown): string {
+function secondsToHours(value: unknown): number | '' {
     const seconds = toNumber(value);
     if (!Number.isFinite(seconds) || seconds <= 0) return '';
-
-    if (seconds < 3600) {
-        const mins = Math.max(1, Math.round(seconds / 60));
-        return `${mins} ${mins === 1 ? 'Min' : 'Mins'}`;
-    }
-
-    const hours = Math.max(1, Math.round(seconds / 3600));
-    return `${hours} ${hours === 1 ? 'Hour' : 'Hours'}`;
+    return Math.max(0.1, Math.round((seconds / 3600) * 10) / 10);
 }
 
 function toNumber(value: unknown): number {

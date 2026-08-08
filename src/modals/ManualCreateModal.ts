@@ -187,7 +187,13 @@ export class ManualCreateModal extends Modal {
         });
         this.createInput(main, t('templateFieldName'), this.draft.title, (value) => this.draft.title = value, 'text', true);
         this.createInput(main, t('templateFieldYear'), this.draft.year, (value) => this.draft.year = value, 'number');
-        this.createInput(main, t('templateFieldReleased'), this.draft.released, (value) => this.draft.released = value);
+        this.createInput(
+            main,
+            t('templateFieldReleased'),
+            this.draft.released,
+            (value) => this.draft.released = value,
+            this.draft.kind === 'movies' || this.draft.kind === 'series' ? 'date' : 'text'
+        );
         this.createStatusSelect(main);
         this.createRatingStars(main);
     }
@@ -491,20 +497,6 @@ export class ManualCreateModal extends Modal {
         });
     }
 
-    private createRatingSelect(parent: HTMLElement): void {
-        this.createSelect(parent, t('editRating'), String(this.draft.rating ?? ''), [
-            ['', '-'],
-            ['1', '1'],
-            ['2', '2'],
-            ['3', '3'],
-            ['4', '4'],
-            ['5', '5'],
-        ], (value) => {
-            const parsed = this.parseNumber(value);
-            this.draft.rating = parsed && parsed >= 1 && parsed <= 5 ? parsed as Exclude<UserRating, null> : null;
-        });
-    }
-
     private createFooterButton(parent: HTMLElement, iconName: string, label: string, variant: 'primary' | 'secondary'): HTMLButtonElement {
         const button = parent.createEl('button', {
             cls: variant === 'primary' ? 'lorebase-flow-btn lorebase-flow-btn-primary' : 'lorebase-flow-btn lorebase-flow-btn-secondary',
@@ -529,10 +521,11 @@ export class ManualCreateModal extends Modal {
         }
         const watchingLabel = kind === 'books' || kind === 'manga' ? t('statusReading') : t('statusWatching');
         const plannedLabel = kind === 'books' || kind === 'manga' ? t('statusPlanToRead') : t('statusPlanned');
+        const completedLabel = kind === 'books' || kind === 'manga' ? t('statusReadCompleted') : t('statusCompleted');
         return [
             ['planned', plannedLabel],
             ['watching', watchingLabel],
-            ['completed', t('statusCompleted')],
+            ['completed', completedLabel],
             ['dropped', t('statusDropped')],
             ['paused', t('statusPaused')],
         ];

@@ -60,8 +60,12 @@ export async function searchShikimori(
     return [];
 }
 
-export async function getShikimoriDetails(fetchJson: JsonFetcher, id: string): Promise<AnimeDetails | null> {
-    const graphqlDetails = await getShikimoriDetailsGraphql(fetchJson, id);
+export async function getShikimoriDetails(
+    fetchJson: JsonFetcher,
+    id: string,
+    options: { includeParts?: boolean } = {}
+): Promise<AnimeDetails | null> {
+    const graphqlDetails = await getShikimoriDetailsGraphql(fetchJson, id, options);
     if (graphqlDetails) return graphqlDetails;
 
     for (const baseUrl of SHIKIMORI_BASE_URLS) {
@@ -77,7 +81,7 @@ export async function getShikimoriDetails(fetchJson: JsonFetcher, id: string): P
         const airedOn = getString(item, 'aired_on');
         const year = airedOn ? airedOn.slice(0, 4) : '';
         const image = getBestImage(getObject(item, 'image'));
-        const parts = await getShikimoriRelatedParts(fetchJson, id, item);
+        const parts = options.includeParts === false ? [] : await getShikimoriRelatedParts(fetchJson, id, item);
 
         return {
             kind: 'anime',
@@ -89,6 +93,7 @@ export async function getShikimoriDetails(fetchJson: JsonFetcher, id: string): P
             studios,
             year,
             imdbRating: toStringSafe(item.score),
+            communityRating: toStringSafe(item.score),
             url: `${SHIKIMORI_PRIMARY_BASE_URL}/animes/${id}`,
             format: mapAnimeFormat(getString(item, 'kind')),
             parts,
@@ -154,6 +159,7 @@ export async function getShikimoriMangaDetails(fetchJson: JsonFetcher, id: strin
             chapters: chapters ? String(chapters) : '',
             volumes: volumes ? String(volumes) : '',
             rating: toStringSafe(item.score),
+            communityRating: toStringSafe(item.score),
             url: `${SHIKIMORI_PRIMARY_BASE_URL}/mangas/${id}`,
             parts: buildShikimoriMangaParts(volumes, chapters),
         };
@@ -209,7 +215,11 @@ async function searchShikimoriGraphql(fetchJson: JsonFetcher, query: string, pag
     return [];
 }
 
-async function getShikimoriDetailsGraphql(fetchJson: JsonFetcher, id: string): Promise<AnimeDetails | null> {
+async function getShikimoriDetailsGraphql(
+    fetchJson: JsonFetcher,
+    id: string,
+    options: { includeParts?: boolean } = {}
+): Promise<AnimeDetails | null> {
     const gql = `query ($ids: String!) {
   animes(ids: $ids, limit: 1) {
     id
@@ -263,7 +273,7 @@ async function getShikimoriDetailsGraphql(fetchJson: JsonFetcher, id: string): P
     );
     const studios = mapStringList(getArray(item, 'studios'), (entry) => getString(asObject(entry), 'name'));
     const image = getBestImage(getObject(item, 'poster'));
-    const parts = await getShikimoriRelatedParts(fetchJson, id, item);
+    const parts = options.includeParts === false ? [] : await getShikimoriRelatedParts(fetchJson, id, item);
 
     return {
         kind: 'anime',
@@ -275,6 +285,7 @@ async function getShikimoriDetailsGraphql(fetchJson: JsonFetcher, id: string): P
         studios,
         year: getShikimoriYear(item),
         imdbRating: toStringSafe(item.score),
+        communityRating: toStringSafe(item.score),
         url: normalizeShikimoriUrl(getString(item, 'url')) || `${SHIKIMORI_PRIMARY_BASE_URL}/animes/${id}`,
         format: mapAnimeFormat(getString(item, 'kind')),
         parts,

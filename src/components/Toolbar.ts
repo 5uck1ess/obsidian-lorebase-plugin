@@ -4,12 +4,25 @@
  */
 
 import { setIcon } from 'obsidian';
-import { FilterState, SortField, SortOrder, MediaStatus, ViewMode } from '../types';
-import { t } from '../localization';
-import { SEARCH_DEBOUNCE_MS, STATUS_ICON_MAP, FILTER_ICON_MAP } from '../constants';
+import {
+    FieldDefinition,
+    FilterOperator,
+    FilterRule,
+    FilterState,
+    LibraryViewState,
+    MediaType,
+    SavedLibraryView,
+    SortField,
+    SortOrder,
+    ViewMode,
+} from '../types';
+import { i18n, t } from '../localization';
+import { SEARCH_DEBOUNCE_MS } from '../constants';
 import { DropdownManager } from './toolbar/DropdownManager';
-import { hasActiveFilters, hasActiveTagFilters } from './toolbar/stateUtils';
+import { hasActiveTagFilters } from './toolbar/stateUtils';
 import { TagGroups, TagSummary, ToolbarCallbacks } from './toolbar/types';
+import { cloneLibraryViewState, createRuleId, libraryViewStatesEqual } from '../services/media/libraryViewState';
+import { createLorebaseDropdown, LorebaseDropdownOption } from './LorebaseDropdown';
 
 export type { ToolbarCallbacks } from './toolbar/types';
 
@@ -26,17 +39,26 @@ export class Toolbar {
     private currentSort: { field: SortField; order: SortOrder };
     private currentFilter: FilterState;
     private currentViewMode: ViewMode;
-    private statusOptions: Array<{ status: MediaStatus; label: string }>;
     private sortOptions: Array<{ field: SortField; label: string }>;
-    private showAdultFilter: boolean;
-    private showCustomFilter: boolean;
     private availableTags: TagGroups = { planTags: [], tags: [], genres: [] };
     private searchTimeout: number | null = null;
-    private showAdultInAll: boolean;
     private randomLabel: string;
     private dropdownManager: DropdownManager;
     private batchDepth = 0;
     private batchDirty = false;
+    private currentViewState: LibraryViewState;
+    private savedViews: SavedLibraryView[];
+    private activeSavedViewId: string | null;
+    private fieldDefinitions: FieldDefinition[];
+    private defaultViewState: LibraryViewState;
+    private resizeObserver: ResizeObserver | null = null;
+    private isNarrowViewPanel = false;
+    private narrowViewPanelWidth = 0;
+    private currentMediaType: MediaType;
+    private enabledMediaTypes: MediaType[];
+    private mediaTrayOpen = false;
+    private mediaTrigger: HTMLButtonElement | null = null;
+    private mediaTrayKeyHandler: (event: KeyboardEvent) => void;
 
     constructor(
         parent: HTMLElement,
@@ -44,25 +66,59 @@ export class Toolbar {
         initialSort: { field: SortField; order: SortOrder },
         initialFilter: FilterState,
         initialViewMode: ViewMode,
-        showAdultInAll: boolean,
-        statusOptions: Array<{ status: MediaStatus; label: string }>,
         sortOptions: Array<{ field: SortField; label: string }>,
-        filterFlags: { showAdult: boolean; showCustom: boolean },
-        randomLabel: string
+        randomLabel: string,
+        viewState: LibraryViewState,
+        savedViews: SavedLibraryView[],
+        activeSavedViewId: string | null,
+        fieldDefinitions: FieldDefinition[],
+        defaultViewState: LibraryViewState,
+        currentMediaType: MediaType,
+        enabledMediaTypes: MediaType[]
     ) {
         this.callbacks = callbacks;
         this.currentSort = initialSort;
         this.currentFilter = initialFilter;
         this.currentViewMode = initialViewMode;
-        this.showAdultInAll = showAdultInAll;
-        this.statusOptions = statusOptions;
         this.sortOptions = sortOptions;
-        this.showAdultFilter = filterFlags.showAdult;
-        this.showCustomFilter = filterFlags.showCustom;
         this.randomLabel = randomLabel;
+        this.currentViewState = cloneLibraryViewState(viewState);
+        this.savedViews = savedViews.map((view) => ({ ...view, state: cloneLibraryViewState(view.state) }));
+        this.activeSavedViewId = activeSavedViewId;
+        this.fieldDefinitions = fieldDefinitions;
+        this.defaultViewState = cloneLibraryViewState(defaultViewState);
+        this.currentMediaType = currentMediaType;
+        this.enabledMediaTypes = [...enabledMediaTypes];
+        this.mediaTrayKeyHandler = (event: KeyboardEvent): void => {
+            if (event.key !== 'Escape' || !this.mediaTrayOpen) return;
+            event.preventDefault();
+            this.mediaTrayOpen = false;
+            this.render();
+            window.requestAnimationFrame(() => this.mediaTrigger?.focus());
+        };
         this.container = parent.createDiv({ cls: 'lorebase-toolbar' });
         this.dropdownManager = new DropdownManager(this.container);
+        activeDocument.addEventListener('keydown', this.mediaTrayKeyHandler);
         this.render();
+        if (typeof ResizeObserver !== 'undefined') {
+            this.resizeObserver = new ResizeObserver((entries) => {
+                const width = Math.round(entries[0]?.contentRect.width ?? this.container.clientWidth);
+                const isNarrow = width > 0 && width <= 520;
+                if (isNarrow !== this.isNarrowViewPanel) {
+                    this.isNarrowViewPanel = isNarrow;
+                    this.container.toggleClass('is-narrow-view-panel', isNarrow);
+                    if (!isNarrow) {
+                        this.narrowViewPanelWidth = 0;
+                        this.container.style.removeProperty('--lorebase-toolbar-width');
+                    }
+                }
+                if (isNarrow && width !== this.narrowViewPanelWidth) {
+                    this.narrowViewPanelWidth = width;
+                    this.container.style.setProperty('--lorebase-toolbar-width', `${width}px`);
+                }
+            });
+            this.resizeObserver.observe(this.container);
+        }
     }
 
     /**
@@ -98,17 +154,24 @@ export class Toolbar {
      * Actual render implementation
      */
     private renderNow(): void {
+        const keepViewPanelOpen = Boolean(
+            this.container.querySelector('.lorebase-view-panel.is-open')
+        );
         this.dropdownManager.closeDropdowns();
         this.container.empty();
         this.container.addClass('lorebase-toolbar');
+        this.container.toggleClass('has-media-tray', this.mediaTrayOpen);
+
+        const mobileHeader = this.container.createDiv({ cls: 'lorebase-toolbar-mobile-header' });
+        mobileHeader.createSpan({ cls: 'lorebase-toolbar-mobile-title', text: 'LOREBASE' });
 
         const leftControls = this.container.createDiv({ cls: 'lorebase-toolbar-left' });
         const centerControls = this.container.createDiv({ cls: 'lorebase-toolbar-center' });
         const rightControls = this.container.createDiv({ cls: 'lorebase-toolbar-right' });
 
-        this.renderFilterControl(leftControls);
-        this.renderSortControl(leftControls);
+        this.renderOrganizeControl(leftControls);
         this.renderTagsControl(leftControls);
+        this.renderMediaControl(leftControls);
 
         this.renderSearch(centerControls);
         this.renderAddButton(centerControls);
@@ -116,145 +179,589 @@ export class Toolbar {
         this.renderRandomButton(rightControls);
         this.renderViewModeControl(rightControls);
         this.renderSettingsControl(rightControls);
+
+        if (this.mediaTrayOpen) {
+            this.renderMediaTray();
+        }
+
+        if (keepViewPanelOpen) {
+            const panel = this.container.querySelector<HTMLElement>('.lorebase-view-panel');
+            const button = panel?.parentElement?.querySelector<HTMLButtonElement>('.lorebase-toolbar-btn');
+            panel?.addClass('is-open');
+            button?.addClass('is-open');
+            button?.setAttribute('aria-expanded', 'true');
+        }
     }
 
-    private renderFilterControl(parent: HTMLElement): void {
+    private renderOrganizeControl(parent: HTMLElement): void {
+        const copy = this.viewText();
         const { button, panel } = this.createDropdown(parent, {
-            icon: 'filter',
-            label: t('filter'),
+            icon: 'sliders-horizontal',
+            label: copy.configure,
         });
-        panel.addClass('lorebase-filter-dropdown');
-
-        button.toggleClass('is-active', this.hasActiveFilters());
-
-        const statusSection = panel.createDiv({ cls: 'lorebase-dropdown-section lorebase-filter-section' });
-        statusSection.createDiv({ cls: 'lorebase-filter-section-title', text: t('status') });
-        const statusGroup = statusSection.createDiv({ cls: 'lorebase-filter-group lorebase-filter-statuses' });
-
-        for (const { status, label } of this.statusOptions) {
-            const isChecked = this.currentFilter.statuses.includes(status);
-            this.createCheckbox(statusGroup, label, isChecked, (checked) => {
-                const next = new Set(this.currentFilter.statuses);
-                if (checked) {
-                    next.add(status);
-                } else {
-                    next.delete(status);
-                }
-                const updated = Array.from(next);
-                this.currentFilter.statuses = updated;
-                this.callbacks.onFilterChange({ statuses: updated });
-                button.toggleClass('is-active', this.hasActiveFilters());
-            }, { icon: STATUS_ICON_MAP[status] });
+        panel.addClass('lorebase-view-panel');
+        panel.setAttribute('role', 'dialog');
+        panel.setAttribute('aria-label', copy.configure);
+        const count = this.currentViewState.rules.length;
+        button.toggleClass('is-active', this.hasCustomizedView());
+        this.addMobileButtonLabel(button, copy.configure, count);
+        if (count > 0) {
+            button.createSpan({ cls: 'lorebase-view-rule-count', text: String(count) });
         }
-
-        const flagSection = panel.createDiv({ cls: 'lorebase-dropdown-section lorebase-filter-section' });
-        flagSection.createDiv({ cls: 'lorebase-filter-section-title', text: t('filterFlags') });
-        const flagGroup = flagSection.createDiv({ cls: 'lorebase-filter-group' });
-
-        this.createCheckbox(
-            flagGroup,
-            t('statusFavorite'),
-            this.currentFilter.favoriteOnly,
-            (checked) => {
-                this.currentFilter.favoriteOnly = checked;
-                this.callbacks.onFilterChange({ favoriteOnly: checked });
-                button.toggleClass('is-active', this.hasActiveFilters());
-            },
-            { icon: FILTER_ICON_MAP.favorite }
-        );
-
-        if (this.showAdultFilter) {
-            this.createCheckbox(
-                flagGroup,
-                t('filterAdult'),
-                this.currentFilter.adultOnly,
-                (checked) => {
-                    this.currentFilter.adultOnly = checked;
-                    this.callbacks.onFilterChange({ adultOnly: checked });
-                    button.toggleClass('is-active', this.hasActiveFilters());
-                },
-                { disabled: !this.showAdultInAll, icon: FILTER_ICON_MAP.adult }
-            );
-        }
-
-        if (this.showCustomFilter) {
-            this.createCheckbox(
-                flagGroup,
-                t('modeCustom'),
-                this.currentFilter.customOnly,
-                (checked) => {
-                    this.currentFilter.customOnly = checked;
-                    this.callbacks.onFilterChange({ customOnly: checked });
-                    button.toggleClass('is-active', this.hasActiveFilters());
-                },
-                { icon: FILTER_ICON_MAP.custom }
-            );
-        }
-
-        // Display section removed - search now works across all cards
+        this.renderViewPanel(panel, button);
     }
 
-    private renderSortControl(parent: HTMLElement): void {
-        const { panel } = this.createDropdown(parent, {
-            icon: 'arrow-up-down',
-            label: t('sort'),
+    private renderMediaControl(parent: HTMLElement): void {
+        const current = this.mediaOption(this.currentMediaType);
+        const button = parent.createEl('button', {
+            cls: `lorebase-toolbar-btn lorebase-media-trigger ${this.mediaTrayOpen ? 'is-open' : ''}`,
+            attr: {
+                type: 'button',
+                'aria-label': `${t('mediaSwitcher')}: ${current.label}`,
+                'aria-expanded': String(this.mediaTrayOpen),
+                'aria-controls': 'lorebase-media-tray',
+            },
         });
+        this.mediaTrigger = button;
+        this.addMobileButtonLabel(button, current.label);
 
-        const options = this.sortOptions;
-        const iconMap: Record<SortField, string> = {
-            name: 'type',
-            series: 'layers',
-            rating: 'star',
-            year: 'calendar',
-            dateCompleted: 'calendar-check',
-        };
+        const icon = button.createSpan({ cls: 'lorebase-media-trigger-icon' });
+        setIcon(icon, current.icon);
 
-        const fieldSection = panel.createDiv({ cls: 'lorebase-dropdown-section' });
-
-        for (const option of options) {
-            const isActive = this.currentSort.field === option.field;
-            const item = fieldSection.createEl('button', {
-                cls: `lorebase-dropdown-choice ${isActive ? 'is-selected' : ''}`,
-                attr: { type: 'button' },
-            });
-
-            const icon = item.createSpan({ cls: 'lorebase-dropdown-icon' });
-            setIcon(icon, iconMap[option.field]);
-
-            const label = item.createSpan({ cls: 'lorebase-dropdown-label', text: option.label });
-            label.setAttribute('aria-hidden', 'true');
-
-            if (isActive) {
-                const check = item.createSpan({ cls: 'lorebase-dropdown-check' });
-                setIcon(check, 'check');
-            }
-
-            item.addEventListener('click', () => {
-                this.currentSort.field = option.field;
-                this.callbacks.onSortChange(option.field, this.currentSort.order);
-                this.render();
-            });
-        }
-
-        const orderSection = panel.createDiv({ cls: 'lorebase-dropdown-section' });
-        const orderRow = orderSection.createDiv({ cls: 'lorebase-dropdown-row' });
-        orderRow.createSpan({ cls: 'lorebase-dropdown-muted', text: t('sortOrder') });
-
-        const orderBtn = orderRow.createEl('button', {
-            cls: 'lorebase-sort-order-btn',
-            attr: { type: 'button', 'aria-label': t('sortOrder') },
-        });
-
-        const orderIcon = orderBtn.createSpan({ cls: 'lorebase-order-icon' });
-        setIcon(orderIcon, this.currentSort.order === 'asc' ? 'arrow-up' : 'arrow-down');
-        orderBtn.createSpan({ text: this.currentSort.order === 'asc' ? t('sortAsc') : t('sortDesc') });
-
-        orderBtn.addEventListener('click', () => {
-            const nextOrder: SortOrder = this.currentSort.order === 'asc' ? 'desc' : 'asc';
-            this.currentSort.order = nextOrder;
-            this.callbacks.onSortChange(this.currentSort.field, nextOrder);
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.dropdownManager.closeDropdowns();
+            this.mediaTrayOpen = !this.mediaTrayOpen;
             this.render();
         });
+    }
+
+    private renderMediaTray(): void {
+        const tray = this.container.createDiv({
+            cls: 'lorebase-media-tray',
+            attr: {
+                id: 'lorebase-media-tray',
+                role: 'toolbar',
+                'aria-label': t('mediaSwitcher'),
+            },
+        });
+
+        for (const mediaType of this.enabledMediaTypes) {
+            const option = this.mediaOption(mediaType);
+            const active = mediaType === this.currentMediaType;
+            const button = tray.createEl('button', {
+                cls: `lorebase-media-option ${active ? 'is-active' : ''}`,
+                attr: {
+                    type: 'button',
+                    'aria-label': option.label,
+                    'aria-pressed': String(active),
+                },
+            });
+            const icon = button.createSpan({ cls: 'lorebase-media-option-icon' });
+            setIcon(icon, option.icon);
+            if (active) {
+                button.createSpan({ cls: 'lorebase-media-option-label', text: option.label });
+            }
+            button.addEventListener('click', () => {
+                if (mediaType === this.currentMediaType) return;
+                this.currentMediaType = mediaType;
+                this.render();
+                this.callbacks.onMediaTypeChange(mediaType);
+            });
+        }
+
+        const close = tray.createEl('button', {
+            cls: 'lorebase-media-option lorebase-media-tray-close',
+            attr: { type: 'button', 'aria-label': t('mediaSwitcherClose') },
+        });
+        setIcon(close, 'x');
+        close.addEventListener('click', () => {
+            this.mediaTrayOpen = false;
+            this.render();
+            window.requestAnimationFrame(() => this.mediaTrigger?.focus());
+        });
+    }
+
+    private mediaOption(mediaType: MediaType): { label: string; icon: string } {
+        if (mediaType === 'anime') return { label: t('contextAnime'), icon: 'clapperboard' };
+        if (mediaType === 'movie') return { label: t('settingsMovies'), icon: 'film' };
+        if (mediaType === 'series') return { label: t('settingsSeries'), icon: 'tv' };
+        if (mediaType === 'book') return { label: t('settingsBooks'), icon: 'book-open' };
+        if (mediaType === 'manga') return { label: t('settingsManga'), icon: 'book-open-text' };
+        return { label: t('contextGames'), icon: 'gamepad-2' };
+    }
+
+    private renderViewPanel(panel: HTMLElement, button: HTMLButtonElement): void {
+        const copy = this.viewText();
+        panel.empty();
+
+        const header = panel.createDiv({ cls: 'lorebase-view-panel-header' });
+        const titleWrap = header.createDiv({ cls: 'lorebase-view-panel-title-wrap' });
+        titleWrap.createDiv({ cls: 'lorebase-view-panel-title', text: copy.configure });
+        const activeSaved = this.savedViews.find((view) => view.id === this.activeSavedViewId);
+        const dirty = Boolean(activeSaved && !libraryViewStatesEqual(activeSaved.state, this.currentViewState));
+        titleWrap.createDiv({
+            cls: `lorebase-view-panel-subtitle ${dirty ? 'is-dirty' : ''}`,
+            text: dirty ? copy.modified : (activeSaved?.name ?? copy.baseView),
+        });
+
+        const reset = header.createEl('button', {
+            cls: 'lorebase-view-icon-button',
+            attr: { type: 'button', 'aria-label': copy.reset, title: copy.reset },
+        });
+        setIcon(reset, 'rotate-ccw');
+        reset.addEventListener('click', () => this.callbacks.onResetView());
+
+        const savedSection = panel.createDiv({ cls: 'lorebase-view-saved-section' });
+        const savedDropdown = savedSection.createDiv({ cls: 'lorebase-view-dropdown' });
+        createLorebaseDropdown(
+            savedDropdown,
+            [
+                { label: copy.baseView, value: '' },
+                ...this.savedViews.map((view) => ({ label: view.name, value: view.id })),
+            ],
+            this.activeSavedViewId ?? '',
+            (value) => this.callbacks.onApplySavedView(value || null),
+            { floating: true }
+        );
+
+        const update = savedSection.createEl('button', {
+            cls: 'lorebase-view-icon-button',
+            attr: {
+                type: 'button',
+                'aria-label': copy.update,
+                title: copy.update,
+            },
+        });
+        update.disabled = !this.activeSavedViewId;
+        setIcon(update, 'save');
+        update.addEventListener('click', () => {
+            if (this.activeSavedViewId) {
+                this.callbacks.onUpdateSavedView(this.activeSavedViewId, cloneLibraryViewState(this.currentViewState));
+            }
+        });
+
+        if (this.activeSavedViewId) {
+            const remove = savedSection.createEl('button', {
+                cls: 'lorebase-view-icon-button is-danger',
+                attr: { type: 'button', 'aria-label': copy.deleteView, title: copy.deleteView },
+            });
+            setIcon(remove, 'trash-2');
+            remove.addEventListener('click', () => {
+                if (this.activeSavedViewId) this.callbacks.onDeleteSavedView(this.activeSavedViewId);
+            });
+        }
+
+        const saveRow = panel.createDiv({ cls: 'lorebase-view-save-row' });
+        const nameInput = saveRow.createEl('input', {
+            cls: 'lorebase-view-name-input',
+            attr: { type: 'text', placeholder: copy.viewName, 'aria-label': copy.viewName },
+        });
+        const saveAs = saveRow.createEl('button', {
+            cls: 'lorebase-view-small-button',
+            text: copy.saveAs,
+            attr: { type: 'button' },
+        });
+        const commitSave = (): void => {
+            const name = nameInput.value.trim();
+            if (!name) {
+                nameInput.focus();
+                return;
+            }
+            this.callbacks.onSaveView(name, cloneLibraryViewState(this.currentViewState));
+        };
+        saveAs.addEventListener('click', commitSave);
+        nameInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') commitSave();
+        });
+        if (this.activeSavedViewId) {
+            const rename = saveRow.createEl('button', {
+                cls: 'lorebase-view-icon-button',
+                attr: { type: 'button', 'aria-label': copy.rename, title: copy.rename },
+            });
+            setIcon(rename, 'pencil');
+            rename.addEventListener('click', () => {
+                const name = nameInput.value.trim();
+                if (!name) {
+                    nameInput.focus();
+                    return;
+                }
+                if (this.activeSavedViewId) this.callbacks.onRenameSavedView(this.activeSavedViewId, name);
+            });
+        }
+
+        const controls = panel.createDiv({ cls: 'lorebase-view-controls' });
+        this.renderSortRow(controls, button);
+        this.renderGroupRow(controls, button);
+
+        const filters = panel.createDiv({ cls: 'lorebase-view-filters' });
+        const filtersHeader = filters.createDiv({ cls: 'lorebase-view-section-header' });
+        filtersHeader.createSpan({ text: copy.filters });
+        filtersHeader.createSpan({ cls: 'lorebase-view-section-count', text: String(this.currentViewState.rules.length) });
+
+        const ruleList = filters.createDiv({ cls: 'lorebase-view-rule-list' });
+        if (this.currentViewState.rules.length === 0) {
+            ruleList.createDiv({ cls: 'lorebase-view-empty', text: copy.noFilters });
+        } else {
+            for (const rule of this.currentViewState.rules) {
+                this.renderRuleEditor(ruleList, rule, panel, button);
+            }
+        }
+
+        const addRow = filters.createDiv({ cls: 'lorebase-view-add-row' });
+        const addDropdown = addRow.createDiv({ cls: 'lorebase-view-dropdown is-filter-picker' });
+        const primaryFilterIds = new Set([
+            'status', 'series', 'favorite', 'year', 'rating', 'dateStarted', 'dateFinished',
+        ]);
+        const filterOptions: LorebaseDropdownOption<string>[] = [
+            { value: '', label: `＋ ${copy.addFilter}` },
+            ...this.fieldDefinitions.map((field) => ({
+                value: field.id,
+                label: field.label,
+                group: field.source === 'yaml'
+                    ? copy.noteFields
+                    : primaryFilterIds.has(field.id)
+                        ? copy.builtIn
+                        : copy.additional,
+                advanced: field.source === 'yaml' || !primaryFilterIds.has(field.id),
+            })),
+        ];
+        createLorebaseDropdown(
+            addDropdown,
+            filterOptions,
+            '',
+            (value) => {
+                const definition = this.fieldDefinitions.find((field) => field.id === value);
+                if (!definition) return;
+                const rule: FilterRule = {
+                    id: createRuleId(),
+                    field: definition.id,
+                    fieldType: definition.type,
+                    operator: definition.operators[0],
+                    value: definition.type === 'list' ? [] : '',
+                };
+                this.currentViewState.rules.push(rule);
+                this.emitViewState(button);
+                this.renderViewPanel(panel, button);
+            },
+            { showMoreLabel: copy.showMore, showLessLabel: copy.showLess, floating: true }
+        );
+    }
+
+    private renderSortRow(parent: HTMLElement, button: HTMLButtonElement): void {
+        const copy = this.viewText();
+        const row = parent.createDiv({ cls: 'lorebase-view-control-row' });
+        row.createSpan({ cls: 'lorebase-view-control-label', text: copy.sortBy });
+        const dropdown = row.createDiv({ cls: 'lorebase-view-dropdown' });
+        const seen = new Set<string>();
+        const options: LorebaseDropdownOption<string>[] = [];
+        for (const option of this.sortOptions) {
+            options.push({ value: option.field, label: option.label });
+            seen.add(option.field);
+        }
+        for (const field of this.fieldDefinitions.filter((entry) => entry.source === 'yaml')) {
+            const sortField = `yaml:${field.type}:${field.id.slice(5)}`;
+            options.push({
+                value: sortField,
+                label: field.label,
+                group: copy.additional,
+                advanced: true,
+            });
+            seen.add(sortField);
+        }
+        if (!seen.has(this.currentViewState.sort.field)) {
+            options.push({
+                value: this.currentViewState.sort.field,
+                label: this.currentViewState.sort.field,
+                group: copy.additional,
+                advanced: true,
+            });
+        }
+        createLorebaseDropdown(
+            dropdown,
+            options,
+            this.currentViewState.sort.field,
+            (value) => {
+                this.currentViewState.sort.field = value as SortField;
+                this.currentSort.field = value as SortField;
+                this.emitViewState(button);
+            },
+            { showMoreLabel: copy.showMore, showLessLabel: copy.showLess, floating: true }
+        );
+        row.appendChild(this.createOrderButton(this.currentViewState.sort.order, (order) => {
+            this.currentViewState.sort.order = order;
+            this.currentSort.order = order;
+            this.emitViewState(button);
+        }));
+    }
+
+    private renderGroupRow(parent: HTMLElement, button: HTMLButtonElement): void {
+        const copy = this.viewText();
+        const row = parent.createDiv({ cls: 'lorebase-view-control-row' });
+        row.createSpan({ cls: 'lorebase-view-control-label', text: copy.groupBy });
+        const dropdown = row.createDiv({ cls: 'lorebase-view-dropdown' });
+        const options: LorebaseDropdownOption<LibraryViewState['group']['mode']>[] = [
+            { value: 'none', label: copy.noGrouping },
+        ];
+        if (this.fieldDefinitions.some((field) => field.id === 'series')) {
+            options.push({ value: 'series', label: copy.series });
+        }
+        options.push(
+            { value: 'finishedMonth', label: copy.finishedMonth },
+            { value: 'finishedYear', label: copy.finishedYear }
+        );
+        createLorebaseDropdown(
+            dropdown,
+            options,
+            this.currentViewState.group.mode,
+            (value) => {
+                this.currentViewState.group.mode = value;
+                orderButton.disabled = value === 'none';
+                this.emitViewState(button);
+            },
+            { floating: true }
+        );
+        const orderButton = this.createOrderButton(this.currentViewState.group.order, (order) => {
+            this.currentViewState.group.order = order;
+            this.emitViewState(button);
+        });
+        orderButton.disabled = this.currentViewState.group.mode === 'none';
+        row.appendChild(orderButton);
+    }
+
+    private renderRuleEditor(
+        parent: HTMLElement,
+        rule: FilterRule,
+        panel: HTMLElement,
+        button: HTMLButtonElement
+    ): void {
+        const copy = this.viewText();
+        const definition = this.fieldDefinitions.find((field) => field.id === rule.field);
+        const card = parent.createDiv({ cls: 'lorebase-view-rule' });
+        const top = card.createDiv({ cls: 'lorebase-view-rule-top' });
+        const icon = top.createSpan({ cls: 'lorebase-view-rule-icon' });
+        setIcon(icon, definition?.icon ?? 'circle-help');
+        top.createSpan({
+            cls: `lorebase-view-rule-label ${definition ? '' : 'is-missing'}`,
+            text: definition?.label ?? `${copy.missingField}: ${rule.field.replace(/^yaml:/, '')}`,
+        });
+        const remove = top.createEl('button', {
+            cls: 'lorebase-view-rule-remove',
+            attr: { type: 'button', 'aria-label': copy.remove },
+        });
+        setIcon(remove, 'x');
+        remove.addEventListener('click', () => {
+            this.currentViewState.rules = this.currentViewState.rules.filter((entry) => entry.id !== rule.id);
+            this.emitViewState(button);
+            this.renderViewPanel(panel, button);
+        });
+
+        const body = card.createDiv({ cls: 'lorebase-view-rule-body' });
+        body.toggleClass('is-between', rule.operator === 'between');
+        const operatorDropdown = body.createDiv({ cls: 'lorebase-view-dropdown is-operator' });
+        const operators = definition?.operators ?? [rule.operator];
+        createLorebaseDropdown(
+            operatorDropdown,
+            operators.map((value) => ({ value, label: this.operatorLabel(value) })),
+            rule.operator,
+            (value) => {
+                rule.operator = value as FilterOperator;
+                this.emitViewState(button);
+                this.renderViewPanel(panel, button);
+            },
+            { floating: true }
+        );
+        this.renderRuleValue(body, rule, definition, button);
+    }
+
+    private renderRuleValue(
+        parent: HTMLElement,
+        rule: FilterRule,
+        definition: FieldDefinition | undefined,
+        button: HTMLButtonElement
+    ): void {
+        if (['empty', 'notEmpty', 'isTrue', 'isFalse', 'thisMonth', 'thisYear'].includes(rule.operator)) return;
+
+        if (definition?.options?.length) {
+            const chips = parent.createDiv({ cls: 'lorebase-view-option-chips' });
+            const selected = new Set(Array.isArray(rule.value) ? rule.value.map(String) : []);
+            for (const option of definition.options) {
+                const chip = chips.createEl('button', {
+                    cls: `lorebase-view-option-chip ${selected.has(option.value) ? 'is-active' : ''}`,
+                    text: option.label,
+                    attr: { type: 'button', 'aria-pressed': String(selected.has(option.value)) },
+                });
+                chip.addEventListener('click', () => {
+                    if (selected.has(option.value)) selected.delete(option.value);
+                    else selected.add(option.value);
+                    rule.value = Array.from(selected);
+                    chip.toggleClass('is-active', selected.has(option.value));
+                    chip.setAttribute('aria-pressed', String(selected.has(option.value)));
+                    this.emitViewState(button);
+                });
+            }
+            return;
+        }
+
+        const inputType = rule.fieldType === 'number' ? 'number' : rule.fieldType === 'date' ? 'date' : 'text';
+        if (rule.operator === 'between') {
+            const range = parent.createDiv({ cls: 'lorebase-view-range-row' });
+            const createRangeInput = (
+                label: string,
+                value: unknown,
+                onChange: (inputValue: string) => void
+            ): void => {
+                const field = range.createEl('label', { cls: 'lorebase-view-range-field' });
+                field.createSpan({ cls: 'lorebase-view-range-label', text: label });
+                const rangeInput = field.createEl('input', {
+                    cls: 'lorebase-view-value-input',
+                    attr: { type: inputType, 'aria-label': label },
+                });
+                rangeInput.value = String(value ?? '');
+                rangeInput.addEventListener('change', () => onChange(rangeInput.value));
+            };
+            createRangeInput(this.viewText().from, rule.value, (value) => {
+                rule.value = rule.fieldType === 'number'
+                    ? (value === '' ? null : Number(value))
+                    : value;
+                this.emitViewState(button);
+            });
+            createRangeInput(this.viewText().to, rule.valueTo, (value) => {
+                rule.valueTo = rule.fieldType === 'number'
+                    ? (value === '' ? null : Number(value))
+                    : value;
+                this.emitViewState(button);
+            });
+            return;
+        }
+
+        const input = parent.createEl('input', {
+            cls: 'lorebase-view-value-input',
+            attr: { type: inputType, placeholder: rule.fieldType === 'list' ? 'value, value' : '' },
+        });
+        input.value = Array.isArray(rule.value) ? rule.value.join(', ') : String(rule.value ?? '');
+        input.addEventListener('change', () => {
+            rule.value = rule.fieldType === 'number'
+                ? (input.value === '' ? null : Number(input.value))
+                : rule.fieldType === 'list'
+                    ? input.value.split(',').map((value) => value.trim()).filter(Boolean)
+                    : input.value;
+            this.emitViewState(button);
+        });
+    }
+
+    private createOrderButton(order: SortOrder, onChange: (order: SortOrder) => void): HTMLButtonElement {
+        const button = document.createElement('button');
+        button.className = 'lorebase-view-order-button';
+        button.type = 'button';
+        button.setAttribute('aria-label', t('sortOrder'));
+        setIcon(button, order === 'asc' ? 'arrow-up' : 'arrow-down');
+        button.addEventListener('click', () => {
+            const next = order === 'asc' ? 'desc' : 'asc';
+            onChange(next);
+            button.empty();
+            setIcon(button, next === 'asc' ? 'arrow-up' : 'arrow-down');
+            order = next;
+        });
+        return button;
+    }
+
+    private emitViewState(button: HTMLButtonElement): void {
+        this.currentFilter.rules = this.currentViewState.rules;
+        this.callbacks.onViewStateChange(cloneLibraryViewState(this.currentViewState));
+        button.toggleClass('is-active', this.hasCustomizedView());
+        const activeSaved = this.savedViews.find((view) => view.id === this.activeSavedViewId);
+        const subtitle = this.container.querySelector<HTMLElement>('.lorebase-view-panel-subtitle');
+        if (subtitle && activeSaved) {
+            const dirty = !libraryViewStatesEqual(activeSaved.state, this.currentViewState);
+            subtitle.setText(dirty ? this.viewText().modified : activeSaved.name);
+            subtitle.toggleClass('is-dirty', dirty);
+        }
+        button.querySelector('.lorebase-view-rule-count')?.remove();
+        if (this.currentViewState.rules.length) {
+            button.createSpan({ cls: 'lorebase-view-rule-count', text: String(this.currentViewState.rules.length) });
+        }
+    }
+
+    private hasCustomizedView(): boolean {
+        const hasFilters = this.currentViewState.rules.length > 0
+            || this.currentViewState.tags.length > 0
+            || this.currentViewState.genres.length > 0;
+        const hasCustomSort = this.currentViewState.sort.field !== this.defaultViewState.sort.field
+            || this.currentViewState.sort.order !== this.defaultViewState.sort.order;
+        const hasCustomGrouping = this.currentViewState.group.mode !== this.defaultViewState.group.mode
+            || this.currentViewState.group.order !== this.defaultViewState.group.order;
+        return hasFilters || hasCustomSort || hasCustomGrouping;
+    }
+
+    private operatorLabel(operator: FilterOperator): string {
+        return this.viewText().operators[operator] ?? operator;
+    }
+
+    private viewText(): {
+        configure: string; modified: string; baseView: string; savedViews: string; reset: string;
+        update: string; deleteView: string; viewName: string; saveAs: string; sortBy: string;
+        groupBy: string; noGrouping: string; series: string; finishedMonth: string; finishedYear: string;
+        filters: string; noFilters: string; addFilter: string; builtIn: string; noteFields: string;
+        additional: string; showMore: string; showLess: string;
+        missingField: string; remove: string; rename: string; from: string; to: string; operators: Record<string, string>;
+    } {
+        const language = i18n.getLanguage();
+        if (language === 'ru') return {
+            configure: 'Вид и фильтры', modified: 'Изменено', baseView: 'Базовый вид',
+            savedViews: 'Сохранённые виды', reset: 'Сбросить', update: 'Обновить вид',
+            deleteView: 'Удалить вид', viewName: 'Название вида', saveAs: 'Сохранить как',
+            sortBy: 'Сортировка', groupBy: 'Группировка', noGrouping: 'Без группировки',
+            series: 'По серии', finishedMonth: 'По месяцу окончания', finishedYear: 'По году окончания',
+            filters: 'Фильтры', noFilters: 'Нет активных фильтров', addFilter: 'Добавить фильтр',
+            builtIn: 'Основные', noteFields: 'Поля заметок', missingField: 'Поле отсутствует',
+            additional: 'Дополнительные', showMore: 'Показать ещё', showLess: 'Скрыть дополнительные',
+            remove: 'Удалить', rename: 'Переименовать', from: 'От', to: 'До',
+            operators: {
+                contains: 'содержит', equals: 'равно', notEquals: 'не равно', empty: 'пусто',
+                notEmpty: 'заполнено', greater: 'больше', less: 'меньше', between: 'в диапазоне',
+                isTrue: 'да', isFalse: 'нет', containsAny: 'содержит любое',
+                containsAll: 'содержит все', notContains: 'не содержит',
+                thisMonth: 'в этом месяце', thisYear: 'в этом году',
+            },
+        };
+        if (language === 'uk') return {
+            configure: 'Вигляд і фільтри', modified: 'Змінено', baseView: 'Базовий вигляд',
+            savedViews: 'Збережені вигляди', reset: 'Скинути', update: 'Оновити вигляд',
+            deleteView: 'Видалити вигляд', viewName: 'Назва вигляду', saveAs: 'Зберегти як',
+            sortBy: 'Сортування', groupBy: 'Групування', noGrouping: 'Без групування',
+            series: 'За серією', finishedMonth: 'За місяцем завершення', finishedYear: 'За роком завершення',
+            filters: 'Фільтри', noFilters: 'Немає активних фільтрів', addFilter: 'Додати фільтр',
+            builtIn: 'Основні', noteFields: 'Поля нотаток', missingField: 'Поле відсутнє',
+            additional: 'Додаткові', showMore: 'Показати ще', showLess: 'Сховати додаткові',
+            remove: 'Видалити', rename: 'Перейменувати', from: 'Від', to: 'До',
+            operators: {
+                contains: 'містить', equals: 'дорівнює', notEquals: 'не дорівнює', empty: 'порожнє',
+                notEmpty: 'заповнене', greater: 'більше', less: 'менше', between: 'у діапазоні',
+                isTrue: 'так', isFalse: 'ні', containsAny: 'містить будь-яке',
+                containsAll: 'містить усі', notContains: 'не містить',
+                thisMonth: 'цього місяця', thisYear: 'цього року',
+            },
+        };
+        return {
+            configure: 'View & filters', modified: 'Modified', baseView: 'Base view',
+            savedViews: 'Saved views', reset: 'Reset', update: 'Update view',
+            deleteView: 'Delete view', viewName: 'View name', saveAs: 'Save as',
+            sortBy: 'Sort', groupBy: 'Group', noGrouping: 'No grouping',
+            series: 'By series', finishedMonth: 'By finish month', finishedYear: 'By finish year',
+            filters: 'Filters', noFilters: 'No active filters', addFilter: 'Add filter',
+            builtIn: 'Built in', noteFields: 'Note fields', missingField: 'Missing field',
+            additional: 'Additional', showMore: 'Show more', showLess: 'Show less',
+            remove: 'Remove', rename: 'Rename', from: 'From', to: 'To',
+            operators: {
+                contains: 'contains', equals: 'equals', notEquals: 'does not equal', empty: 'is empty',
+                notEmpty: 'is not empty', greater: 'greater than', less: 'less than', between: 'between',
+                isTrue: 'yes', isFalse: 'no', containsAny: 'contains any',
+                containsAll: 'contains all', notContains: 'does not contain',
+                thisMonth: 'this month', thisYear: 'this year',
+            },
+        };
     }
 
     private renderTagsControl(parent: HTMLElement): void {
@@ -265,6 +772,7 @@ export class Toolbar {
 
         panel.addClass('lorebase-tags-dropdown');
         button.toggleClass('is-active', this.hasActiveTagFilters());
+        this.addMobileButtonLabel(button, t('tags'));
 
         const sections: Array<{ key: 'tags' | 'genres'; title: string; items: TagSummary[]; prefix: string }> = [
             { key: 'tags', title: t('plans'), items: this.availableTags.planTags ?? [], prefix: '' },
@@ -309,9 +817,12 @@ export class Toolbar {
                     this.currentFilter[section.key] = updated;
                     if (section.key === 'tags') {
                         this.callbacks.onFilterChange({ tags: updated });
+                        this.currentViewState.tags = [...updated];
                     } else {
                         this.callbacks.onFilterChange({ genres: updated });
+                        this.currentViewState.genres = [...updated];
                     }
+                    this.callbacks.onViewStateChange(cloneLibraryViewState(this.currentViewState));
 
                     const nowActive = updated.includes(tag.id);
                     chip.toggleClass('is-active', nowActive);
@@ -380,6 +891,7 @@ export class Toolbar {
             },
         });
         setIcon(randomBtn, 'dice');
+        this.addMobileButtonLabel(randomBtn, this.randomLabel);
         randomBtn.addEventListener('click', () => this.callbacks.onRandom());
     }
 
@@ -391,6 +903,7 @@ export class Toolbar {
         });
 
         button.removeClass('is-active');
+        this.addMobileButtonLabel(button, t('view'));
 
         const options: Array<{ mode: ViewMode; label: string; icon: string }> = [
             { mode: 'grid', label: t('viewGrid'), icon: 'rectangle-vertical' },
@@ -464,49 +977,12 @@ export class Toolbar {
         return this.dropdownManager.createDropdown(parent, options);
     }
 
-    private createCheckbox(
-        parent: HTMLElement,
-        label: string,
-        checked: boolean,
-        onChange: (checked: boolean) => void,
-        options?: { disabled?: boolean; icon?: string }
-    ): void {
-        const row = parent.createDiv({ cls: 'lorebase-dropdown-item' });
-        if (options?.disabled) {
-            row.addClass('is-disabled');
-        }
-
-        if (options?.icon) {
-            const icon = row.createSpan({ cls: 'lorebase-dropdown-icon lorebase-filter-icon' });
-            setIcon(icon, options.icon);
-        }
-
-        const labelSpan = row.createSpan({ cls: 'lorebase-dropdown-label', text: label });
-        labelSpan.setAttribute('aria-hidden', 'true');
-
-        const input = row.createEl('input', {
-            attr: {
-                type: 'checkbox',
-                'aria-label': label,
-            },
+    private addMobileButtonLabel(button: HTMLButtonElement, label: string, count = 0): void {
+        button.addClass('lorebase-toolbar-mobile-labeled');
+        button.createSpan({
+            cls: 'lorebase-toolbar-mobile-label',
+            text: count > 0 ? `${label} ${count}` : label,
         });
-        input.checked = checked;
-        input.disabled = Boolean(options?.disabled);
-
-        row.addEventListener('click', (event) => {
-            if (options?.disabled) return;
-            if (event.target === input) return;
-            input.checked = !input.checked;
-            onChange(input.checked);
-        });
-
-        input.addEventListener('change', () => {
-            onChange(input.checked);
-        });
-    }
-
-    private hasActiveFilters(): boolean {
-        return hasActiveFilters(this.currentFilter);
     }
 
     private hasActiveTagFilters(): boolean {
@@ -531,11 +1007,29 @@ export class Toolbar {
 
     updateSort(sort: { field: SortField; order: SortOrder }): void {
         this.currentSort = sort;
+        this.currentViewState.sort = { ...sort };
         this.render();
     }
 
-    updateStatusOptions(options: Array<{ status: MediaStatus; label: string }>): void {
-        this.statusOptions = options;
+    updateViewState(
+        state: LibraryViewState,
+        savedViews: SavedLibraryView[],
+        activeSavedViewId: string | null,
+        defaultViewState?: LibraryViewState
+    ): void {
+        this.currentViewState = cloneLibraryViewState(state);
+        this.currentSort = { ...state.sort };
+        this.currentFilter.rules = state.rules;
+        this.currentFilter.tags = [...state.tags];
+        this.currentFilter.genres = [...state.genres];
+        this.savedViews = savedViews.map((view) => ({ ...view, state: cloneLibraryViewState(view.state) }));
+        this.activeSavedViewId = activeSavedViewId;
+        if (defaultViewState) this.defaultViewState = cloneLibraryViewState(defaultViewState);
+        this.render();
+    }
+
+    updateFieldDefinitions(definitions: FieldDefinition[]): void {
+        this.fieldDefinitions = definitions;
         this.render();
     }
 
@@ -544,14 +1038,14 @@ export class Toolbar {
         this.render();
     }
 
-    updateFilterFlags(flags: { showAdult: boolean; showCustom: boolean }): void {
-        this.showAdultFilter = flags.showAdult;
-        this.showCustomFilter = flags.showCustom;
+    updateRandomLabel(label: string): void {
+        this.randomLabel = label;
         this.render();
     }
 
-    updateRandomLabel(label: string): void {
-        this.randomLabel = label;
+    updateMediaContext(mediaType: MediaType, enabledMediaTypes: MediaType[]): void {
+        this.currentMediaType = mediaType;
+        this.enabledMediaTypes = [...enabledMediaTypes];
         this.render();
     }
 
@@ -566,10 +1060,7 @@ export class Toolbar {
     /**
      * Refresh the toolbar (re-render for localization updates)
      */
-    refresh(showAdultInAll?: boolean): void {
-        if (showAdultInAll !== undefined) {
-            this.showAdultInAll = showAdultInAll;
-        }
+    refresh(): void {
         this.render();
     }
 
@@ -583,6 +1074,9 @@ export class Toolbar {
         }
 
         this.dropdownManager.destroy();
+        activeDocument.removeEventListener('keydown', this.mediaTrayKeyHandler);
+        this.resizeObserver?.disconnect();
+        this.resizeObserver = null;
 
         if (this.container && this.container.parentElement) {
             this.container.remove();

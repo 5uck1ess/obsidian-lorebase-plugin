@@ -3,31 +3,49 @@
  * Cinematic edit mode for anime tracking.
  */
 
-import { App, Menu, Modal, TFile } from 'obsidian';
+import { App, Menu, Modal, setIcon, TFile } from 'obsidian';
 import { AnimeFormat, AnimeItem, AnimePart, AnimeStatus, RelatedMediaLink, UserRating } from '../types';
 import { DEFAULT_COVER, STATUS_CONFIG } from '../constants';
 import { i18n, t } from '../localization';
 import { createLorebaseDropdown, LorebaseDropdownHandle } from '../components/LorebaseDropdown';
 import { GenreEditModal } from './GenreEditModal';
+import { CommunityRatingRefresh, renderCommunityRatingPanel } from './CommunityRatingPanel';
+import { MediaSourceAction, renderMediaSourcePanel } from './MediaSourcePanel';
+import { setupMobileEditor } from './mobileEditor';
+import { extractMarkdownSection } from '../services/markdownSections';
+import { HierarchicalDatePicker, validateDatePickers } from './HierarchicalDatePicker';
 
 type PartDraft = AnimePart;
+type AnimePartsRefreshResult = {
+    parts: AnimePart[];
+    activePartId: string | null;
+    status: AnimeStatus;
+};
 
 type RelatedCandidate = RelatedMediaLink;
+type NotesMode = 'description' | 'myNotes';
 
 export class AnimeEditModal extends Modal {
     private anime: AnimeItem;
     private onSave: (updates: Partial<AnimeItem>) => Promise<void>;
     private onDelete?: () => void;
-    private onRefreshParts?: () => Promise<boolean | void>;
+    private onRefreshParts?: () => Promise<AnimePartsRefreshResult | boolean | void>;
+    private onRefreshCommunityRating?: CommunityRatingRefresh;
 
     private selectedRating: UserRating;
     private selectedStatus: AnimeStatus;
     private favorite: boolean;
+    private title: string;
     private year: number | null;
     private summary: string;
+    private myNotes = '';
+    private notesMode: NotesMode = 'description';
+    private notesExpanded = false;
+    private started: string;
+    private finished: string;
     private format: AnimeFormat;
-    private sourceUrl: string;
     private genres: string[];
+    private studios: string[];
     private tags: string[];
     private parts: PartDraft[];
     private activePartId: string | null;
@@ -36,6 +54,8 @@ export class AnimeEditModal extends Modal {
     private draggedRelatedPath: string | null = null;
     private formatDropdown?: LorebaseDropdownHandle<AnimeFormat>;
     private partKindDropdown?: LorebaseDropdownHandle<AnimeFormat>;
+    private startedDatePicker?: HierarchicalDatePicker;
+    private finishedDatePicker?: HierarchicalDatePicker;
 
     private onKeydown = (event: KeyboardEvent): void => {
         if (event.key === 'Escape') {
@@ -60,23 +80,30 @@ export class AnimeEditModal extends Modal {
         anime: AnimeItem,
         onSave: (updates: Partial<AnimeItem>) => Promise<void>,
         onDelete?: () => void,
-        onRefreshParts?: () => Promise<boolean | void>,
-        relatedCandidates: RelatedCandidate[] = []
+        onRefreshParts?: () => Promise<AnimePartsRefreshResult | boolean | void>,
+        onRefreshCommunityRating?: CommunityRatingRefresh,
+        relatedCandidates: RelatedCandidate[] = [],
+        private readonly onRefreshSource?: MediaSourceAction,
+        private readonly onChangeSource?: MediaSourceAction
     ) {
         super(app);
         this.anime = anime;
         this.onSave = onSave;
         this.onDelete = onDelete;
         this.onRefreshParts = onRefreshParts;
+        this.onRefreshCommunityRating = onRefreshCommunityRating;
 
         this.selectedRating = anime.userRating;
         this.selectedStatus = anime.status;
         this.favorite = anime.favorite;
+        this.title = anime.displayName;
         this.year = anime.year;
         this.summary = anime.summary ?? anime.description ?? '';
+        this.started = this.normalizeDateInput(anime.started);
+        this.finished = this.normalizeDateInput(anime.finished) || this.formatDateForInput(anime.dateWatched);
         this.format = anime.format ?? 'tv';
-        this.sourceUrl = anime.sourceUrl ?? '';
         this.genres = this.normalizeGenres(anime.genres ?? []);
+        this.studios = this.normalizeDisplayList(anime.studios ?? []);
         this.tags = this.normalizeTags(anime.tags ?? []);
         this.parts = this.normalizeParts(anime.parts);
         this.relatedMedia = this.normalizeRelatedMedia(anime.relatedMedia ?? []);
@@ -96,7 +123,6 @@ export class AnimeEditModal extends Modal {
 
         const root = contentEl.createDiv({ cls: 'lorebase-editmode-root lorebase-editmode-anime-root lorebase-modal-panel' });
         root.appendChild(this.createTemplateFragment(this.buildTemplate()));
-
         this.bindStaticContent(root);
         this.bindHeader(root);
         this.bindQuickSettings(root);
@@ -104,13 +130,25 @@ export class AnimeEditModal extends Modal {
         this.bindRating(root);
         this.bindFields(root);
         this.bindParts(root);
+        this.bindNotesDisclosure(root);
+        this.bindPlayDates(root);
         this.bindNotes(root);
+        void this.loadMyNotes(root);
         this.bindTags(root);
         this.bindRelatedMedia(root);
         this.bindDates(root);
+        if (this.onRefreshCommunityRating) {
+            renderCommunityRatingPanel(root, this.anime, this.onRefreshCommunityRating);
+        }
+        renderMediaSourcePanel(root, this.anime, this.onRefreshSource, this.onChangeSource);
+        setupMobileEditor(root, () => void this.save());
     }
 
     onClose(): void {
+        this.startedDatePicker?.destroy();
+        this.finishedDatePicker?.destroy();
+        this.startedDatePicker = undefined;
+        this.finishedDatePicker = undefined;
         this.modalEl.removeEventListener('keydown', this.onKeydown);
         this.contentEl.empty();
         this.modalEl.removeClass('lorebase-editmode-modal-shell');
@@ -157,7 +195,7 @@ export class AnimeEditModal extends Modal {
                             <div class="lorebase-editmode-toggle-list">
                                 <label class="lorebase-editmode-switch-row">
                                     <span class="lorebase-editmode-switch-label">${t('editFavorite')}</span>
-                                    <button type="button" class="lorebase-editmode-switch" data-toggle="favorite" aria-pressed="false"><span class="lorebase-editmode-switch-thumb"></span></button>
+                                    <button type="button" class="lorebase-editmode-switch lorebase-editmode-switch-favorite" data-toggle="favorite" aria-label="${t('editFavorite')}" aria-pressed="false"><span class="lorebase-editmode-switch-thumb"></span></button>
                                 </label>
                             </div>
                         </section>
@@ -166,7 +204,7 @@ export class AnimeEditModal extends Modal {
                     <main class="lorebase-editmode-column lorebase-editmode-column-center">
                         <section class="lorebase-editmode-panel lorebase-editmode-title-meta">
                             <div class="lorebase-editmode-title-row">
-                                <input class="lorebase-editmode-title-input" data-field="title" type="text" aria-label="${t('templateFieldName')}" readonly />
+                                <input class="lorebase-editmode-title-input" data-field="title" type="text" aria-label="${t('templateFieldName')}" />
                             </div>
                             <div class="lorebase-editmode-meta-row">
                                 <label class="lorebase-editmode-field">
@@ -177,13 +215,32 @@ export class AnimeEditModal extends Modal {
                                     <span class="lorebase-editmode-field-label">${t('editFormat')}</span>
                                     <div class="lorebase-editmode-dropdown" data-field="format"></div>
                                 </label>
-                                <label class="lorebase-editmode-field is-wide">
-                                    <span class="lorebase-editmode-field-label">${t('editUrl')}</span>
-                                    <input class="lorebase-editmode-input" data-field="source-url" type="text" placeholder="https://..." />
-                                </label>
                             </div>
                             <div class="lorebase-editmode-field lorebase-editmode-genres-field">
                                 <div class="lorebase-editmode-chip-row" data-role="genre-chips"></div>
+                                <div class="lorebase-editmode-title-meta-actions">
+                                    <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-ghost lorebase-editmode-notes-toggle" data-action="toggle-notes" aria-expanded="false">
+                                        <span class="lorebase-editmode-notes-toggle-icon" data-role="notes-toggle-icon"></span>
+                                        <span>${t('editDescription')}</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="lorebase-editmode-panel lorebase-editmode-panel-glass lorebase-editmode-notes is-collapsed" data-component="NotesEditor">
+                            <div class="lorebase-editmode-panel-title-row">
+                                <h3 class="lorebase-editmode-panel-title" data-role="notes-title">${t('editDescription')}</h3>
+                                <div class="lorebase-editmode-note-tabs" role="tablist">
+                                    <button type="button" class="lorebase-editmode-note-tab is-active" data-mode="description">${t('editDescription')}</button>
+                                    <button type="button" class="lorebase-editmode-note-tab" data-mode="myNotes">${t('editMyNotes')}</button>
+                                </div>
+                            </div>
+                            <div class="lorebase-editmode-notes-shell">
+                                <textarea class="lorebase-editmode-notes-input" data-field="summary" rows="9"></textarea>
+                            </div>
+                            <div class="lorebase-editmode-notes-footer">
+                                <span class="lorebase-editmode-saved-indicator" data-role="saved-indicator">${t('editSaved')}</span>
+                                <span class="lorebase-editmode-char-count" data-role="char-count">0 ${t('editCharsShort')}</span>
                             </div>
                         </section>
 
@@ -207,41 +264,85 @@ export class AnimeEditModal extends Modal {
                                 </div>
                                 <div class="lorebase-editmode-rating-line"><span class="lorebase-editmode-rating-line-fill" data-role="rating-line"></span></div>
                             </div>
+                            <div class="lorebase-editmode-play-dates">
+                                <label class="lorebase-editmode-date-field">
+                                    <span class="lorebase-editmode-field-label">${t('editStarted')}</span>
+                                    <div class="lorebase-editmode-date-input-row">
+                                        <div class="lorebase-editmode-date-control">
+                                            <button type="button" class="lorebase-editmode-date-control-icon" data-action="open-started-calendar" data-role="started-date-icon" title="${t('editStarted')}" aria-label="${t('editStarted')}"></button>
+                                            <input class="lorebase-editmode-input" data-field="started-date" type="text" inputmode="numeric" maxlength="10" />
+                                        </div>
+                                        <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-ghost lorebase-editmode-btn-tiny" data-action="today-started">${t('editToday')}</button>
+                                    </div>
+                                </label>
+                                <label class="lorebase-editmode-date-field">
+                                    <span class="lorebase-editmode-field-label">${t('editFinished')}</span>
+                                    <div class="lorebase-editmode-date-input-row">
+                                        <div class="lorebase-editmode-date-control">
+                                            <button type="button" class="lorebase-editmode-date-control-icon" data-action="open-finished-calendar" data-role="finished-date-icon" title="${t('editFinished')}" aria-label="${t('editFinished')}"></button>
+                                            <input class="lorebase-editmode-input" data-field="finished-date" type="text" inputmode="numeric" maxlength="10" />
+                                        </div>
+                                        <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-ghost lorebase-editmode-btn-tiny" data-action="today-finished">${t('editToday')}</button>
+                                    </div>
+                                </label>
+                            </div>
                         </section>
 
                         <section class="lorebase-editmode-panel lorebase-editmode-panel-glass lorebase-editmode-anime-parts">
                             <div class="lorebase-editmode-panel-title-row">
                                 <h3 class="lorebase-editmode-panel-title">${t('editAnimeParts')}</h3>
-                                <div class="lorebase-editmode-part-actions">
-                                    <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-tight" data-action="refresh-parts">${t('animePartsCheck')}</button>
-                                    <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-tight" data-action="remove-part">${t('editRemovePart')}</button>
-                                    <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-tight" data-action="add-part">${t('editAddPart')}</button>
+                                <button type="button" class="lorebase-editmode-anime-parts-icon-action" data-action="refresh-parts" aria-label="${t('animePartsCheck')}"></button>
+                            </div>
+                            <div class="lorebase-editmode-anime-parts-navigation">
+                                <div class="lorebase-editmode-chip-row lorebase-editmode-part-strip" data-role="part-strip"></div>
+                                <div class="lorebase-editmode-anime-part-inline-actions">
+                                    <button type="button" class="lorebase-editmode-anime-parts-icon-action" data-action="add-part" aria-label="${t('editAddPart')}"></button>
+                                    <button type="button" class="lorebase-editmode-anime-parts-icon-action is-danger" data-action="remove-part" aria-label="${t('editRemovePart')}"></button>
                                 </div>
                             </div>
-                            <div class="lorebase-editmode-chip-row lorebase-editmode-part-strip" data-role="part-strip"></div>
+                            <div class="lorebase-editmode-anime-part-summary">
+                                <div class="lorebase-editmode-anime-part-stat">
+                                    <span class="lorebase-editmode-anime-part-stat-label">${t('editTotalEpisodes')}</span>
+                                    <strong class="lorebase-editmode-anime-part-stat-value" data-role="progress-total">-</strong>
+                                </div>
+                                <div class="lorebase-editmode-anime-part-stat">
+                                    <span class="lorebase-editmode-anime-part-stat-label">${t('editActivePart')}</span>
+                                    <strong class="lorebase-editmode-anime-part-stat-value" data-role="active-part-name">-</strong>
+                                </div>
+                            </div>
                             <div class="lorebase-editmode-anime-part-editor" data-role="part-editor">
-                                <div class="lorebase-editmode-meta-row">
-                                    <label class="lorebase-editmode-field">
-                                        <span class="lorebase-editmode-field-label">${t('editFormat')}</span>
-                                        <div class="lorebase-editmode-dropdown" data-field="part-kind"></div>
-                                    </label>
-                                    <label class="lorebase-editmode-field">
+                                <div class="lorebase-editmode-anime-part-identity-row">
+                                    <label class="lorebase-editmode-field lorebase-editmode-anime-part-title-field">
                                         <span class="lorebase-editmode-field-label">${t('templateFieldName')}</span>
                                         <input class="lorebase-editmode-input" data-field="part-title" type="text" />
                                     </label>
-                                    <label class="lorebase-editmode-field">
-                                        <span class="lorebase-editmode-field-label">${t('editSeasonCurrent')}</span>
-                                        <input class="lorebase-editmode-input" data-field="part-season" type="number" inputmode="numeric" />
-                                    </label>
+                                    <div class="lorebase-editmode-anime-part-meta-rail">
+                                        <label class="lorebase-editmode-field lorebase-editmode-anime-part-meta-field lorebase-editmode-anime-part-format-field">
+                                            <span class="lorebase-editmode-field-label">${t('editFormat')}</span>
+                                            <div class="lorebase-editmode-dropdown" data-field="part-kind"></div>
+                                        </label>
+                                        <label class="lorebase-editmode-field lorebase-editmode-anime-part-meta-field lorebase-editmode-anime-part-season-field">
+                                            <span class="lorebase-editmode-field-label">${t('editSeasonCurrent')}</span>
+                                            <input class="lorebase-editmode-input" data-field="part-season" type="number" inputmode="numeric" />
+                                        </label>
+                                        <div class="lorebase-editmode-field lorebase-editmode-anime-part-meta-field lorebase-editmode-anime-episodes-field">
+                                            <span class="lorebase-editmode-field-label">${t('editEpisodes')}</span>
+                                            <div class="lorebase-editmode-anime-episode-stepper">
+                                                <button type="button" class="lorebase-editmode-anime-stepper-button" data-action="episode-dec" aria-label="${t('editEpisodeCurrent')}">−</button>
+                                                <input class="lorebase-editmode-input lorebase-editmode-anime-stepper-input" data-field="part-episode-current" type="number" inputmode="numeric" aria-label="${t('editEpisodeCurrent')}" />
+                                                <span class="lorebase-editmode-anime-slash">/</span>
+                                                <input class="lorebase-editmode-input lorebase-editmode-anime-stepper-input" data-field="part-episode-total" type="number" inputmode="numeric" aria-label="${t('editEpisodeTotal')}" />
+                                                <button type="button" class="lorebase-editmode-anime-stepper-button" data-action="episode-inc" aria-label="${t('editEpisodeInc')}">+</button>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="lorebase-editmode-anime-episode-row">
-                                    <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-tight" data-action="episode-dec">-</button>
-                                    <input class="lorebase-editmode-input" data-field="part-episode-current" type="number" inputmode="numeric" />
-                                    <span class="lorebase-editmode-anime-slash">/</span>
-                                    <input class="lorebase-editmode-input" data-field="part-episode-total" type="number" inputmode="numeric" />
-                                    <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-tight" data-action="episode-inc">+1</button>
+                                <div class="lorebase-editmode-anime-part-tracking-row">
+                                    <div class="lorebase-editmode-anime-part-status-field">
+                                        <span class="lorebase-editmode-field-label">${t('editStatus')}</span>
+                                        <div class="lorebase-editmode-segmented lorebase-editmode-part-status" data-role="part-status-segments"></div>
+                                    </div>
                                 </div>
-                                <div class="lorebase-editmode-segmented lorebase-editmode-part-status" data-role="part-status-segments"></div>
                             </div>
                         </section>
 
@@ -253,26 +354,26 @@ export class AnimeEditModal extends Modal {
                             <div class="lorebase-editmode-related-list" data-role="related-media"></div>
                         </section>
 
-                        <section class="lorebase-editmode-panel lorebase-editmode-panel-glass lorebase-editmode-notes">
-                            <div class="lorebase-editmode-panel-title-row"><h3 class="lorebase-editmode-panel-title">${t('editSummary')}</h3></div>
-                            <div class="lorebase-editmode-notes-shell">
-                                <textarea class="lorebase-editmode-notes-input" data-field="summary" rows="9"></textarea>
-                            </div>
-                            <div class="lorebase-editmode-notes-footer">
-                                <span class="lorebase-editmode-saved-indicator" data-role="saved-indicator">${t('editSaved')}</span>
-                                <span class="lorebase-editmode-char-count" data-role="char-count">0 ${t('editCharsShort')}</span>
-                            </div>
-                        </section>
                     </main>
 
                     <aside class="lorebase-editmode-column lorebase-editmode-column-right">
-                        <section class="lorebase-editmode-panel lorebase-editmode-panel-glass">
-                            <div class="lorebase-editmode-panel-title-row"><h3 class="lorebase-editmode-panel-title">${t('editProgress')}</h3></div>
-                            <div class="lorebase-editmode-kv-list">
-                                <div class="lorebase-editmode-kv-row"><span class="lorebase-editmode-kv-key">${t('editTotalEpisodes')}</span><span class="lorebase-editmode-kv-val" data-role="progress-total">-</span></div>
-                                <div class="lorebase-editmode-kv-row"><span class="lorebase-editmode-kv-key">${t('editActivePart')}</span><span class="lorebase-editmode-kv-val" data-role="active-part-name">-</span></div>
+                        <details class="lorebase-editmode-panel lorebase-editmode-panel-glass lorebase-editmode-advanced">
+                            <summary class="lorebase-editmode-panel-title-row lorebase-editmode-collapsible-summary">
+                                <h3 class="lorebase-editmode-panel-title">${t('editAdvanced')}</h3>
+                                <span class="lorebase-editmode-collapsible-caret" aria-hidden="true">v</span>
+                            </summary>
+                            <div class="lorebase-editmode-advanced-grid">
+                                <label class="lorebase-editmode-field">
+                                    <span class="lorebase-editmode-field-label">${t('templateFieldStudios')}</span>
+                                    <input class="lorebase-editmode-input" data-field="studios" type="text" placeholder="Studio A, Studio B" />
+                                </label>
+                                <div class="lorebase-editmode-path-row">
+                                    <span class="lorebase-editmode-field-label">${t('editLocalPath')}</span>
+                                    <code class="lorebase-editmode-local-path" data-role="local-path"></code>
+                                    <button type="button" class="lorebase-editmode-btn lorebase-editmode-btn-ghost lorebase-editmode-btn-tight" data-action="browse-file">${t('editOpen')}</button>
+                                </div>
                             </div>
-                        </section>
+                        </details>
 
                         <section class="lorebase-editmode-panel lorebase-editmode-tags">
                             <div class="lorebase-editmode-panel-title-row"><h3 class="lorebase-editmode-panel-title">${t('tags')}</h3></div>
@@ -305,10 +406,14 @@ export class AnimeEditModal extends Modal {
         if (title) title.value = this.anime.displayName;
         const year = this.qs<HTMLInputElement>(root, '[data-field="year"]');
         if (year) year.value = this.year ? String(this.year) : '';
-        const source = this.qs<HTMLInputElement>(root, '[data-field="source-url"]');
-        if (source) source.value = this.sourceUrl;
+        const studios = this.qs<HTMLInputElement>(root, '[data-field="studios"]');
+        if (studios) studios.value = this.studios.join(', ');
+        const path = this.qs<HTMLElement>(root, '[data-role="local-path"]');
+        if (path) path.textContent = this.anime.filePath;
         const summary = this.qs<HTMLTextAreaElement>(root, '[data-field="summary"]');
-        if (summary) summary.value = this.summary;
+        if (summary) summary.value = this.getCurrentNotesValue();
+        this.setInput(root, '[data-field="started-date"]', this.started);
+        this.setInput(root, '[data-field="finished-date"]', this.finished);
 
         this.renderFormatDropdowns(root);
         this.renderStatusSegments(root);
@@ -324,6 +429,8 @@ export class AnimeEditModal extends Modal {
         this.updateRatingUI(root);
         this.updateProgressSummary(root);
         this.updateCharCount(root);
+        this.updateNotesDisclosureUI(root);
+        this.updateNotesModeUI(root);
     }
 
     private bindHeader(root: HTMLElement): void {
@@ -359,6 +466,10 @@ export class AnimeEditModal extends Modal {
                 const status = btn.dataset.status as AnimeStatus | undefined;
                 if (!status) return;
                 this.selectedStatus = status;
+                if (status === 'completed' && !this.finished) {
+                    this.finished = this.getTodayDateInput();
+                    this.finishedDatePicker?.syncInput(this.finished);
+                }
                 this.updateStatusUI(root);
             });
         });
@@ -378,24 +489,59 @@ export class AnimeEditModal extends Modal {
     }
 
     private bindFields(root: HTMLElement): void {
+        const title = this.qs<HTMLInputElement>(root, '[data-field="title"]');
+        title?.addEventListener('input', () => {
+            this.title = title.value.trim();
+            this.setText(
+                root,
+                '[data-role="breadcrumb"]',
+                `${t('editBreadcrumbAnime')} / ${this.title || this.anime.displayName}`
+            );
+        });
+
         const year = this.qs<HTMLInputElement>(root, '[data-field="year"]');
         year?.addEventListener('input', () => {
             this.year = this.parseNumberInput(year.value);
         });
 
-        const source = this.qs<HTMLInputElement>(root, '[data-field="source-url"]');
-        source?.addEventListener('input', () => {
-            this.sourceUrl = source.value.trim();
+        const studios = this.qs<HTMLInputElement>(root, '[data-field="studios"]');
+        studios?.addEventListener('input', () => {
+            this.studios = this.normalizeDisplayList(studios.value.split(/[,;\n]+/));
+        });
+
+        this.qs<HTMLButtonElement>(root, '[data-action="browse-file"]')?.addEventListener('click', () => {
+            const file = this.getFile();
+            if (file) void this.app.workspace.getLeaf(true).openFile(file);
         });
     }
 
     private bindParts(root: HTMLElement): void {
-        this.qs<HTMLButtonElement>(root, '[data-action="refresh-parts"]')?.addEventListener('click', () => {
-            if (!this.onRefreshParts) return;
-            void this.onRefreshParts().then((shouldClose) => {
-                if (shouldClose) this.close();
+        const refreshButton = this.qs<HTMLButtonElement>(root, '[data-action="refresh-parts"]');
+        const addButton = this.qs<HTMLButtonElement>(root, '[data-action="add-part"]');
+        const removeButton = this.qs<HTMLButtonElement>(root, '[data-action="remove-part"]');
+        if (refreshButton) setIcon(refreshButton, 'refresh-cw');
+        if (addButton) setIcon(addButton, 'plus');
+        if (removeButton) setIcon(removeButton, 'trash-2');
+
+        if (refreshButton) {
+            refreshButton.disabled = !this.onRefreshParts;
+            refreshButton.toggleClass('is-disabled', !this.onRefreshParts);
+            refreshButton.addEventListener('click', () => {
+                if (!this.onRefreshParts) return;
+                void (async (): Promise<void> => {
+                    refreshButton.disabled = true;
+                    refreshButton.addClass('is-loading');
+                    try {
+                        const result = await this.onRefreshParts?.();
+                        if (!result || typeof result === 'boolean') return;
+                        this.applyRefreshedParts(root, result);
+                    } finally {
+                        refreshButton.disabled = !this.onRefreshParts;
+                        refreshButton.removeClass('is-loading');
+                    }
+                })();
             });
-        });
+        }
 
         this.qs<HTMLButtonElement>(root, '[data-action="add-part"]')?.addEventListener('click', () => {
             const nextIndex = this.parts.length + 1;
@@ -484,13 +630,111 @@ export class AnimeEditModal extends Modal {
         });
     }
 
+    private applyRefreshedParts(root: HTMLElement, result: AnimePartsRefreshResult): void {
+        this.parts = result.parts.map((part) => ({ ...part }));
+        this.activePartId = result.activePartId && this.parts.some((part) => part.id === result.activePartId)
+            ? result.activePartId
+            : this.parts[0]?.id ?? null;
+        this.selectedStatus = result.status;
+
+        const activePart = this.getActivePart();
+        if (activePart) {
+            this.format = activePart.kind;
+            this.formatDropdown?.setValue(this.format);
+        }
+
+        this.renderPartStrip(root);
+        this.renderActivePartEditor(root);
+        this.updateProgressSummary(root);
+        this.updatePartActions(root);
+        this.updateStatusUI(root);
+    }
+
+    private bindNotesDisclosure(root: HTMLElement): void {
+        const button = this.qs<HTMLButtonElement>(root, '[data-action="toggle-notes"]');
+        button?.addEventListener('click', () => {
+            this.notesExpanded = !this.notesExpanded;
+            this.updateNotesDisclosureUI(root);
+            if (this.notesExpanded) {
+                window.setTimeout(() => this.qs<HTMLTextAreaElement>(root, '[data-field="summary"]')?.focus(), 0);
+            }
+        });
+    }
+
+    private bindPlayDates(root: HTMLElement): void {
+        const started = this.qs<HTMLInputElement>(root, '[data-field="started-date"]');
+        const finished = this.qs<HTMLInputElement>(root, '[data-field="finished-date"]');
+        const startedTrigger = this.qs<HTMLButtonElement>(root, '[data-action="open-started-calendar"]');
+        const finishedTrigger = this.qs<HTMLButtonElement>(root, '[data-action="open-finished-calendar"]');
+
+        if (started && startedTrigger) {
+            setIcon(startedTrigger, 'calendar-days');
+            this.startedDatePicker = new HierarchicalDatePicker(
+                started,
+                startedTrigger,
+                () => this.started,
+                (value) => { this.started = value; }
+            );
+            this.startedDatePicker.syncInput(this.started);
+        }
+
+        if (finished && finishedTrigger) {
+            setIcon(finishedTrigger, 'calendar-days');
+            this.finishedDatePicker = new HierarchicalDatePicker(
+                finished,
+                finishedTrigger,
+                () => this.finished,
+                (value) => { this.finished = value; }
+            );
+            this.finishedDatePicker.syncInput(this.finished);
+        }
+
+        this.qs<HTMLButtonElement>(root, '[data-action="today-started"]')?.addEventListener('click', () => {
+            this.started = this.getTodayDateInput();
+            this.startedDatePicker?.syncInput(this.started);
+        });
+
+        this.qs<HTMLButtonElement>(root, '[data-action="today-finished"]')?.addEventListener('click', () => {
+            this.finished = this.getTodayDateInput();
+            this.finishedDatePicker?.syncInput(this.finished);
+        });
+    }
+
     private bindNotes(root: HTMLElement): void {
         const summary = this.qs<HTMLTextAreaElement>(root, '[data-field="summary"]');
         summary?.addEventListener('input', () => {
-            this.summary = summary.value;
+            if (this.notesMode === 'description') this.summary = summary.value;
+            else this.myNotes = summary.value;
             this.setText(root, '[data-role="saved-indicator"]', t('editUnsavedChanges'));
             this.updateCharCount(root);
         });
+
+        root.querySelectorAll<HTMLButtonElement>('.lorebase-editmode-note-tab').forEach((button) => {
+            button.addEventListener('click', () => {
+                const mode = button.dataset.mode === 'myNotes' ? 'myNotes' : 'description';
+                if (mode === this.notesMode) return;
+                this.notesMode = mode;
+                if (summary) summary.value = this.getCurrentNotesValue();
+                this.updateNotesModeUI(root);
+                this.updateCharCount(root);
+            });
+        });
+    }
+
+    private async loadMyNotes(root: HTMLElement): Promise<void> {
+        const file = this.getFile();
+        if (!file) return;
+        try {
+            const content = await this.app.vault.read(file);
+            this.myNotes = extractMarkdownSection(content);
+            if (this.notesMode === 'myNotes') {
+                const summary = this.qs<HTMLTextAreaElement>(root, '[data-field="summary"]');
+                if (summary) summary.value = this.myNotes;
+                this.updateCharCount(root);
+            }
+        } catch (error) {
+            console.warn('[LOREBASE] Failed to load My Notes section.', error);
+        }
     }
 
     private bindTags(root: HTMLElement): void {
@@ -559,7 +803,8 @@ export class AnimeEditModal extends Modal {
         const disabled = this.parts.length <= 1;
         remove.disabled = disabled;
         remove.toggleClass('is-disabled', disabled);
-        remove.setAttr('title', disabled ? t('editCannotRemoveLastPart') : t('editRemovePart'));
+        remove.toggleClass('is-hidden', disabled);
+        remove.setAttr('aria-label', disabled ? t('editCannotRemoveLastPart') : t('editRemovePart'));
     }
 
     private renderStars(root: HTMLElement): void {
@@ -831,7 +1076,35 @@ export class AnimeEditModal extends Modal {
     }
 
     private updateCharCount(root: HTMLElement): void {
-        this.setText(root, '[data-role="char-count"]', `${this.summary.length} ${t('editCharsShort')}`);
+        this.setText(root, '[data-role="char-count"]', `${this.getCurrentNotesValue().length} ${t('editCharsShort')}`);
+    }
+
+    private getCurrentNotesValue(): string {
+        return this.notesMode === 'description' ? this.summary : this.myNotes;
+    }
+
+    private updateNotesModeUI(root: HTMLElement): void {
+        root.querySelectorAll<HTMLButtonElement>('.lorebase-editmode-note-tab').forEach((button) => {
+            const mode = button.dataset.mode === 'myNotes' ? 'myNotes' : 'description';
+            button.toggleClass('is-active', mode === this.notesMode);
+        });
+        const title = this.qs<HTMLElement>(root, '[data-role="notes-title"]');
+        if (title) title.textContent = this.notesMode === 'description' ? t('editDescription') : t('editMyNotes');
+    }
+
+    private updateNotesDisclosureUI(root: HTMLElement): void {
+        const panel = this.qs<HTMLElement>(root, '[data-component="NotesEditor"]');
+        panel?.toggleClass('is-collapsed', !this.notesExpanded);
+        const button = this.qs<HTMLButtonElement>(root, '[data-action="toggle-notes"]');
+        if (button) {
+            button.setAttr('aria-expanded', String(this.notesExpanded));
+            button.toggleClass('is-active', this.notesExpanded);
+        }
+        const icon = this.qs<HTMLElement>(root, '[data-role="notes-toggle-icon"]');
+        if (icon) {
+            icon.empty();
+            setIcon(icon, this.notesExpanded ? 'chevron-up' : 'chevron-down');
+        }
     }
 
     private renderFormatDropdowns(root: HTMLElement): void {
@@ -968,6 +1241,19 @@ export class AnimeEditModal extends Modal {
         return Array.from(unique.values());
     }
 
+    private normalizeDisplayList(values: string[]): string[] {
+        const result: string[] = [];
+        const seen = new Set<string>();
+        for (const value of values) {
+            const normalized = value.trim();
+            const key = normalized.toLocaleLowerCase();
+            if (!normalized || seen.has(key)) continue;
+            seen.add(key);
+            result.push(normalized);
+        }
+        return result;
+    }
+
     private normalizeRelatedMedia(values: RelatedMediaLink[]): RelatedMediaLink[] {
         const unique = new Map<string, RelatedMediaLink>();
         for (const value of values) {
@@ -1016,26 +1302,59 @@ export class AnimeEditModal extends Modal {
         }).format(new Date(timestamp));
     }
 
+    private normalizeDateInput(value: string | null | undefined): string {
+        const trimmed = String(value ?? '').trim();
+        if (!trimmed) return '';
+        if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+        const parsed = Date.parse(trimmed);
+        return Number.isNaN(parsed) ? '' : this.formatDateForInput(parsed);
+    }
+
+    private formatDateForInput(timestamp: number | null | undefined): string {
+        if (!timestamp || !Number.isFinite(timestamp)) return '';
+        const date = new Date(timestamp);
+        const year = date.getUTCFullYear();
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(date.getUTCDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    private getTodayDateInput(): string {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
     private getFile(): TFile | null {
         const file = this.app.vault.getAbstractFileByPath(this.anime.filePath);
         return file instanceof TFile ? file : null;
     }
 
-    private async save(): Promise<void> {
+    async saveBeforeSourceRefresh(): Promise<boolean> {
+        return this.save();
+    }
+
+    private async save(): Promise<boolean> {
+        if (!validateDatePickers([this.startedDatePicker, this.finishedDatePicker].filter((picker): picker is HierarchicalDatePicker => Boolean(picker)))) return false;
         const activePart = this.getActivePart();
         const allPartsCompleted = this.parts.length > 0 && this.parts.every((part) => part.status === 'completed');
         const status = allPartsCompleted ? 'completed' : this.selectedStatus;
         const updates: Partial<AnimeItem> = {
+            displayName: this.title || this.anime.displayName,
             userRating: this.selectedRating,
             status,
             favorite: this.favorite,
             year: this.year,
             summary: this.summary,
             format: this.format,
-            sourceUrl: this.sourceUrl || null,
+            started: this.started || null,
+            finished: this.finished || null,
             integrationProvider: this.anime.integrationProvider ?? null,
             integrationId: this.anime.integrationId ?? null,
             genres: this.genres,
+            studios: this.studios,
             tags: this.tags,
             parts: this.parts,
             activePartId: activePart?.id ?? this.activePartId,
@@ -1043,10 +1362,12 @@ export class AnimeEditModal extends Modal {
             seasonCurrent: activePart?.seasonNumber ?? null,
             episodeCurrent: activePart?.episodeCurrent ?? null,
             episodeTotal: activePart?.episodeTotal ?? null,
+            myNotes: this.myNotes,
         };
 
         await this.onSave(updates);
         this.close();
+        return true;
     }
 }
 
@@ -1077,10 +1398,12 @@ class RelatedMediaPickerModal extends Modal {
             attr: { type: 'text', placeholder: t('searchPlaceholder') },
         });
         const filters = this.contentEl.createDiv({ cls: 'lorebase-related-picker-filters' });
+        this.createFilterButton(filters, 'game', t('settingsGames'));
         this.createFilterButton(filters, 'movie', t('settingsMovies'));
         this.createFilterButton(filters, 'series', t('settingsSeries'));
         this.createFilterButton(filters, 'book', t('settingsBooks'));
         this.createFilterButton(filters, 'manga', t('settingsManga'));
+        this.createFilterButton(filters, 'anime', t('settingsAnime'));
         this.listEl = this.contentEl.createDiv({ cls: 'lorebase-related-picker-grid' });
         this.footerEl = this.contentEl.createDiv({ cls: 'lorebase-related-picker-footer' });
         input.addEventListener('input', () => {

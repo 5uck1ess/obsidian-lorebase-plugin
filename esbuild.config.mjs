@@ -4,7 +4,7 @@ import { builtinModules } from "module";
 
 const prod = process.argv[2] === "production";
 
-const context = await esbuild.context({
+const scriptContext = await esbuild.context({
     entryPoints: ["src/main.ts"],
     bundle: true,
     external: [
@@ -32,9 +32,29 @@ const context = await esbuild.context({
     minify: prod
 });
 
+const styleContext = await esbuild.context({
+    entryPoints: ["src/styles.css"],
+    bundle: true,
+    target: "es2018",
+    logLevel: "info",
+    sourcemap: false,
+    outfile: "styles.css",
+    minify: prod
+});
+
 if (prod) {
-    await context.rebuild();
+    await Promise.all([
+        scriptContext.rebuild(),
+        styleContext.rebuild()
+    ]);
+    await Promise.all([
+        scriptContext.dispose(),
+        styleContext.dispose()
+    ]);
     process.exit(0);
 } else {
-    await context.watch();
+    await Promise.all([
+        scriptContext.watch(),
+        styleContext.watch()
+    ]);
 }

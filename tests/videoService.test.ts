@@ -58,6 +58,85 @@ describe('VideoService', () => {
         ]);
     });
 
+    it('resolves local poster paths to Obsidian resource URLs', () => {
+        const file = createMockFile('Movies/Conclave.md', 'Conclave');
+        const posterFile = createMockFile('_attachments/movies/Conclave - Poster.webp', 'Conclave - Poster');
+        posterFile.name = 'Conclave - Poster.webp';
+        posterFile.extension = 'webp';
+        const app = {
+            metadataCache: {
+                getFileCache(target: { path: string }): unknown {
+                    if (target.path !== file.path) return null;
+                    return {
+                        frontmatter: {
+                            type: 'movie',
+                            title: 'Conclave',
+                            poster: '_attachments/movies/Conclave - Poster.webp',
+                        },
+                    };
+                },
+            },
+            vault: {
+                getAbstractFileByPath(path: string): TFile | null {
+                    return path === posterFile.path ? posterFile : null;
+                },
+                getFiles(): TFile[] {
+                    return [posterFile];
+                },
+                getResourcePath(target: TFile): string {
+                    return `app://vault/${encodeURIComponent(target.path)}?123`;
+                },
+            },
+        } as unknown as App;
+
+        const service = new VideoService(app, 'movie', 'Movies', createMetadataService(app));
+        const parsed = service.parseFromCache(file);
+
+        expect(parsed?.poster).toBe('_attachments/movies/Conclave - Poster.webp');
+        expect(parsed?.imageUrl).toBe('app://vault/_attachments%2Fmovies%2FConclave%20-%20Poster.webp?123');
+    });
+
+    it('retries local poster resolution after a previously missing file appears', () => {
+        const file = createMockFile('Series/Shameless.md', 'Shameless');
+        const posterPath = 'files/lorebase/images/series/Shameless - Poster.jpg';
+        const posterFile = createMockFile(posterPath, 'Shameless - Poster');
+        posterFile.name = 'Shameless - Poster.jpg';
+        posterFile.extension = 'jpg';
+        let posterExists = false;
+        const app = {
+            metadataCache: {
+                getFileCache(target: { path: string }): unknown {
+                    if (target.path !== file.path) return null;
+                    return {
+                        frontmatter: {
+                            type: 'series',
+                            title: 'Shameless',
+                            poster: posterPath,
+                        },
+                    };
+                },
+            },
+            vault: {
+                getAbstractFileByPath(path: string): TFile | null {
+                    return posterExists && path === posterPath ? posterFile : null;
+                },
+                getFiles(): TFile[] {
+                    return posterExists ? [posterFile] : [];
+                },
+                getResourcePath(target: TFile): string {
+                    return `app://vault/${encodeURIComponent(target.path)}?456`;
+                },
+            },
+        } as unknown as App;
+        const metadataService = createMetadataService(app);
+        const service = new VideoService(app, 'series', 'Series', metadataService);
+
+        expect(service.parseFromCache(file)?.imageUrl).toBe(posterPath);
+
+        posterExists = true;
+        expect(service.parseFromCache(file)?.imageUrl).toBe('app://vault/files%2Florebase%2Fimages%2Fseries%2FShameless%20-%20Poster.jpg?456');
+    });
+
     it('parses series parts and uses the active part for progress', () => {
         const file = createMockFile('Series/Show.md', 'Show');
         const app = createMockApp({
@@ -99,6 +178,58 @@ describe('VideoService', () => {
         expect(parsed?.episodeCurrent).toBe(3);
         expect(parsed?.episodeTotal).toBe(8);
         expect(parsed?.seasons).toBe(2);
+    });
+
+    it('normalizes movie release dates and writes comma-separated video credits as YAML arrays', async () => {
+        const file = createMockFile('Movies/Ensemble.md', 'Ensemble');
+        const frontmatter: Record<string, unknown> = {
+            type: 'movie',
+            title: 'Ensemble',
+            released: '25 Dec 2013',
+            director: 'Old Director',
+            cast: 'Old Actor',
+        };
+        const app = {
+            metadataCache: {
+                getFileCache(target: TFile): unknown {
+                    return target.path === file.path ? { frontmatter } : null;
+                },
+            },
+            vault: {
+                getAbstractFileByPath(path: string): TFile | null {
+                    return path === file.path ? file : null;
+                },
+                getFiles(): TFile[] {
+                    return [];
+                },
+                getResourcePath(): string {
+                    return '';
+                },
+            },
+            fileManager: {
+                async processFrontMatter(_file: TFile, handler: (value: Record<string, unknown>) => void): Promise<void> {
+                    handler(frontmatter);
+                },
+            },
+        } as unknown as App;
+        const service = new VideoService(app, 'movie', 'Movies', createMetadataService(app));
+        const item = service.parseFromCache(file);
+
+        expect(item).not.toBeNull();
+        expect((item as MovieItem).releaseDate).toBe('2013-12-25');
+        await service.updateItem(item!, {
+            releaseDate: '1 Jan 2014',
+            director: 'Lana Wachowski, Lilly Wachowski, lana wachowski',
+            actors: 'Keanu Reeves, Carrie-Anne Moss',
+        });
+
+        expect(frontmatter).toMatchObject({
+            released: '2014-01-01',
+            directors: ['Lana Wachowski', 'Lilly Wachowski'],
+            actors: ['Keanu Reeves', 'Carrie-Anne Moss'],
+        });
+        expect(frontmatter).not.toHaveProperty('director');
+        expect(frontmatter).not.toHaveProperty('cast');
     });
 
     it('trashes video notes instead of deleting them directly', async () => {

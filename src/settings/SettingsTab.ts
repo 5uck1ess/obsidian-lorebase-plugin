@@ -15,6 +15,7 @@ import {
     ICON_MEDIA,
 } from './sections/constants';
 import { renderCardCustomizationSettings, renderGeneralSettings } from './sections/general';
+import { getImportSectionDesc, getImportSectionLabel, renderImportSection } from './sections/import';
 import { renderIntegrationsSection } from './sections/integrations';
 import { renderMediaSettings } from './sections/library';
 import type { CollapsibleGroupElements, MediaTabScope, MediaTypeKey, SettingsSectionContext } from './sections/types';
@@ -24,6 +25,7 @@ type SettingsSectionId =
     | 'customization'
     | 'media'
     | 'integrations'
+    | 'import'
     | 'about';
 
 interface SettingsSectionDefinition {
@@ -36,8 +38,6 @@ interface SettingsSectionDefinition {
 
 export class LorebaseSettingTab extends PluginSettingTab {
     plugin: LorebasePlugin;
-    private detachSectionNav: (() => void) | null = null;
-    private syncSectionNavActive: (() => void) | null = null;
     private activeMediaTabs: Record<MediaTabScope, MediaTypeKey> = {
         statusLabels: 'games',
         mediaSettings: 'games',
@@ -51,15 +51,7 @@ export class LorebaseSettingTab extends PluginSettingTab {
         this.plugin = plugin;
     }
 
-    getSettingDefinitions(): unknown[] {
-        return [];
-    }
-
     display(): void {
-        this.detachSectionNav?.();
-        this.detachSectionNav = null;
-        this.syncSectionNavActive = null;
-
         const scrollState = this.captureScrollState();
         const { containerEl } = this;
         containerEl.empty();
@@ -95,6 +87,7 @@ export class LorebaseSettingTab extends PluginSettingTab {
 
     hide(): void {
         this.openAccordionSections.clear();
+        void this.plugin.saveSettings();
         super.hide();
     }
 
@@ -104,7 +97,8 @@ export class LorebaseSettingTab extends PluginSettingTab {
             { id: 'customization', label: t('settingsBadges'), description: t('settingsSectionCustomizationDesc'), icon: ICON_CARD_CUSTOMIZATION, render: (container) => renderCardCustomizationSettings(context, container) },
             { id: 'media', label: t('settingsMedia'), description: t('settingsSectionMediaDesc'), icon: ICON_MEDIA, render: (container) => renderMediaSettings(context, container) },
             { id: 'integrations', label: t('settingsIntegrations'), description: t('settingsSectionIntegrationsDesc'), icon: ICON_INTEGRATIONS, render: (container) => renderIntegrationsSection(context, container) },
-            { id: 'about', label: t('settingsAbout'), description: t('settingsSectionAboutDesc'), icon: 'lucide:info', render: (container) => renderAboutSection(context, container) },
+            { id: 'import', label: getImportSectionLabel(this.plugin.settings.language), description: getImportSectionDesc(this.plugin.settings.language), icon: String.fromCodePoint(0x1F4E6), render: (container) => renderImportSection(context, container) },
+            { id: 'about', label: t('settingsAbout'), description: t('settingsSectionAboutDesc'), icon: String.fromCodePoint(0x1F9E9), render: (container) => renderAboutSection(context, container) },
         ];
     }
 
@@ -189,7 +183,11 @@ export class LorebaseSettingTab extends PluginSettingTab {
             buttons.set(section.id, button);
         }
 
-        const selectSection = (id: SettingsSectionId, focus = false): void => {
+        const selectSection = (
+            id: SettingsSectionId,
+            focus = false,
+            resetScroll = false
+        ): void => {
             this.activeSettingsSection = id;
             buttons.forEach((button, key) => {
                 const active = key === id;
@@ -202,13 +200,17 @@ export class LorebaseSettingTab extends PluginSettingTab {
                 panel.toggleClass('is-active', active);
                 panel.toggleAttribute('hidden', !active);
             });
+            if (resetScroll) {
+                const scrollHost = this.findScrollHost();
+                scrollHost.scrollTop = 0;
+            }
             if (focus) buttons.get(id)?.focus();
         };
 
         sections.forEach((section, index) => {
             const button = buttons.get(section.id);
             if (!button) return;
-            button.addEventListener('click', () => selectSection(section.id));
+            button.addEventListener('click', () => selectSection(section.id, false, true));
             button.addEventListener('keydown', (event) => {
                 let nextIndex = index;
                 if (event.key === 'ArrowRight') nextIndex = (index + 1) % sections.length;
@@ -217,7 +219,7 @@ export class LorebaseSettingTab extends PluginSettingTab {
                 else if (event.key === 'End') nextIndex = sections.length - 1;
                 else return;
                 event.preventDefault();
-                selectSection(sections[nextIndex].id, true);
+                selectSection(sections[nextIndex].id, true, true);
             });
         });
 
@@ -426,150 +428,4 @@ export class LorebaseSettingTab extends PluginSettingTab {
         return this.containerEl;
     }
 
-    private renderSectionNavigation(
-        navContainer: HTMLElement,
-        contentContainer: HTMLElement,
-        scrollHost: HTMLElement
-    ): void {
-        const mainNav = navContainer.createDiv({ cls: 'lorebase-settings-nav-main' });
-
-        const sectionHeaders = Array.from(
-            contentContainer.querySelectorAll<HTMLElement>('.lorebase-settings-section-title')
-        );
-
-        if (sectionHeaders.length === 0) {
-            navContainer.addClass('is-empty');
-            return;
-        }
-
-        const matchesLabel = (element: HTMLElement, label: string): boolean => {
-            return (element.textContent ?? '').trim().includes(label);
-        };
-
-        const integrationLabel = t('settingsIntegrations');
-        const integrationIndex = sectionHeaders.findIndex((header) => matchesLabel(header, integrationLabel));
-        const groupTitles = Array.from(
-            contentContainer.querySelectorAll<HTMLElement>('.lorebase-settings-group-title')
-        );
-        const providersGroup = groupTitles.find((title) => matchesLabel(title, t('settingsIntegrationsProviders')));
-        const templatesGroup = groupTitles.find((title) => matchesLabel(title, t('settingsIntegrationsTemplates')));
-
-        const integrationSubTargets: Array<{ label: string; element: HTMLElement }> = [];
-        if (integrationIndex !== -1) {
-            integrationSubTargets.push({ label: integrationLabel, element: sectionHeaders[integrationIndex] });
-            if (providersGroup) integrationSubTargets.push({ label: t('settingsIntegrationsProviders'), element: providersGroup });
-            if (templatesGroup) integrationSubTargets.push({ label: t('settingsIntegrationsTemplates'), element: templatesGroup });
-        }
-
-        const navButtons: HTMLButtonElement[] = [];
-        let integrationSubNav: HTMLElement | null = null;
-
-        sectionHeaders.forEach((header, index) => {
-            const label = header.textContent?.trim() || `Section ${index + 1}`;
-            const button = mainNav.createEl('button', {
-                cls: 'lorebase-settings-nav-item',
-                attr: {
-                    type: 'button',
-                    'aria-label': label,
-                },
-            });
-
-            button.addEventListener('click', () => {
-                const hostRect = scrollHost.getBoundingClientRect();
-                const headerRect = header.getBoundingClientRect();
-                const top = scrollHost.scrollTop + (headerRect.top - hostRect.top) - 12;
-                scrollHost.scrollTo({
-                    top: Math.max(0, top),
-                    behavior: 'smooth',
-                });
-            });
-
-            navButtons.push(button);
-
-            // Insert integration sub-navigation directly after Integrations
-            if (index === integrationIndex) {
-                integrationSubNav = mainNav.createDiv({ cls: 'lorebase-settings-nav-sub' });
-            }
-        });
-
-        const integrationSubButtons = integrationSubNav
-            ? integrationSubTargets.map((target, index) => {
-                const label = target.label || `Integration section ${index + 1}`;
-                const button = integrationSubNav!.createEl('button', {
-                    cls: 'lorebase-settings-subnav-item',
-                    attr: {
-                        type: 'button',
-                        'aria-label': label,
-                    },
-                });
-
-                button.addEventListener('click', () => {
-                    const hostRect = scrollHost.getBoundingClientRect();
-                    const targetRect = target.element.getBoundingClientRect();
-                    const top = scrollHost.scrollTop + (targetRect.top - hostRect.top) - 14;
-                    scrollHost.scrollTo({
-                        top: Math.max(0, top),
-                        behavior: 'smooth',
-                    });
-                });
-
-                return button;
-            })
-            : [];
-
-        const updateActive = (): void => {
-            const hostRect = scrollHost.getBoundingClientRect();
-            const activeLine = hostRect.top + 110;
-            let activeIndex = 0;
-
-            sectionHeaders.forEach((header, index) => {
-                if (header.getBoundingClientRect().top <= activeLine) {
-                    activeIndex = index;
-                }
-            });
-
-            // At the very bottom of the scroll area force-highlight last section
-            // so Danger Zone is correctly marked as active.
-            const bottomReached = (scrollHost.scrollTop + scrollHost.clientHeight) >= (scrollHost.scrollHeight - 4);
-            if (bottomReached) {
-                activeIndex = sectionHeaders.length - 1;
-            }
-
-            navButtons.forEach((button, index) => {
-                button.toggleClass('is-active', index === activeIndex);
-            });
-
-            const showIntegrationSubNav = integrationSubButtons.length > 0
-                && integrationIndex !== -1
-                && activeIndex === integrationIndex;
-            integrationSubNav?.toggleClass('is-visible', showIntegrationSubNav);
-
-            if (!showIntegrationSubNav) {
-                integrationSubButtons.forEach((button) => button.removeClass('is-active'));
-                return;
-            }
-
-            let activeSubIndex = 0;
-            integrationSubTargets.forEach((target, index) => {
-                if (target.element.getBoundingClientRect().top <= activeLine) {
-                    activeSubIndex = index;
-                }
-            });
-
-            integrationSubButtons.forEach((button, index) => {
-                button.toggleClass('is-active', index === activeSubIndex);
-            });
-        };
-
-        const onScroll = (): void => updateActive();
-        scrollHost.addEventListener('scroll', onScroll, { passive: true });
-        window.addEventListener('resize', onScroll);
-        updateActive();
-
-        this.syncSectionNavActive = updateActive;
-        this.detachSectionNav = () => {
-            scrollHost.removeEventListener('scroll', onScroll);
-            window.removeEventListener('resize', onScroll);
-        };
-    }
 }

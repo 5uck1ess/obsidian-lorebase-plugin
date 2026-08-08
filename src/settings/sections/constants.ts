@@ -8,6 +8,7 @@ export const LABEL_RU = '\u0420\u0443\u0441\u0441\u043a\u0438\u0439';
 export const LABEL_UK = '\u0423\u043a\u0440\u0430\u0457\u043d\u0441\u044c\u043a\u0430';
 
 export const GAME_TEMPLATE_FIELDS: TemplateFieldDef[] = [
+    { key: 'type', label: 'templateFieldType' },
     { key: 'name', label: 'templateFieldName' },
     { key: 'poster', label: 'templateFieldPoster' },
     { key: 'posterHorizontal', label: 'templateFieldPosterHorizontal' },
@@ -19,10 +20,13 @@ export const GAME_TEMPLATE_FIELDS: TemplateFieldDef[] = [
     { key: 'released', label: 'templateFieldReleased' },
     { key: 'developers', label: 'templateFieldDevelopers' },
     { key: 'publishers', label: 'templateFieldPublishers' },
-    { key: 'rating', label: 'templateFieldRating' },
     { key: 'userRating', label: 'templateFieldUserRating' },
+    { key: 'communityRating', label: 'templateFieldCommunityRating' },
+    { key: 'communityVotes', label: 'templateFieldCommunityVotes' },
+    { key: 'communityRatingProvider', label: 'templateFieldCommunityRatingProvider' },
     { key: 'status', label: 'templateFieldStatus' },
     { key: 'favorite', label: 'templateFieldFavorite' },
+    { key: 'integrationSource', label: 'templateFieldIntegrationSource' },
     { key: 'url', label: 'templateFieldUrl' },
 ];
 
@@ -33,23 +37,28 @@ export const GAME_TEMPLATE_FIELDS_HLTB: TemplateFieldDef[] = [
 ];
 
 export const ANIME_TEMPLATE_FIELDS: TemplateFieldDef[] = [
+    { key: 'type', label: 'templateFieldType' },
     { key: 'name', label: 'templateFieldName' },
     { key: 'image', label: 'templateFieldImage' },
     { key: 'imageHorizontal', label: 'templateFieldImageHorizontal' },
     { key: 'plot', label: 'templateFieldPlot' },
-    { key: 'scoreImdb', label: 'templateFieldScoreImdb' },
     { key: 'tags', label: 'templateFieldTags' },
     { key: 'year', label: 'templateFieldYear' },
     { key: 'studios', label: 'templateFieldStudios' },
     { key: 'format', label: 'templateFieldFormat' },
     { key: 'animeParts', label: 'templateFieldAnimeParts' },
     { key: 'rating', label: 'templateFieldRating' },
+    { key: 'communityRating', label: 'templateFieldCommunityRating' },
+    { key: 'communityVotes', label: 'templateFieldCommunityVotes' },
+    { key: 'communityRatingProvider', label: 'templateFieldCommunityRatingProvider' },
     { key: 'status', label: 'templateFieldStatus' },
     { key: 'favorite', label: 'templateFieldFavorite' },
+    { key: 'integrationSource', label: 'templateFieldIntegrationSource' },
     { key: 'url', label: 'templateFieldUrl' },
 ];
 
 export const MOVIE_TEMPLATE_FIELDS: TemplateFieldDef[] = [
+    { key: 'type', label: 'templateFieldType' },
     { key: 'name', label: 'templateFieldName' },
     { key: 'poster', label: 'templateFieldPoster' },
     { key: 'posterHorizontal', label: 'templateFieldPosterHorizontal' },
@@ -61,6 +70,9 @@ export const MOVIE_TEMPLATE_FIELDS: TemplateFieldDef[] = [
     { key: 'director', label: 'templateFieldDirector' },
     { key: 'actors', label: 'templateFieldActors' },
     { key: 'rating', label: 'templateFieldRating' },
+    { key: 'communityRating', label: 'templateFieldCommunityRating' },
+    { key: 'communityVotes', label: 'templateFieldCommunityVotes' },
+    { key: 'communityRatingProvider', label: 'templateFieldCommunityRatingProvider' },
     { key: 'status', label: 'templateFieldStatus' },
     { key: 'favorite', label: 'templateFieldFavorite' },
     { key: 'movieParts', label: 'templateFieldMovieParts' },
@@ -69,6 +81,7 @@ export const MOVIE_TEMPLATE_FIELDS: TemplateFieldDef[] = [
 ];
 
 export const SERIES_TEMPLATE_FIELDS: TemplateFieldDef[] = [
+    { key: 'type', label: 'templateFieldType' },
     { key: 'name', label: 'templateFieldName' },
     { key: 'poster', label: 'templateFieldPoster' },
     { key: 'posterHorizontal', label: 'templateFieldPosterHorizontal' },
@@ -84,6 +97,9 @@ export const SERIES_TEMPLATE_FIELDS: TemplateFieldDef[] = [
     { key: 'episodeTotal', label: 'templateFieldEpisodeTotal' },
     { key: 'seriesParts', label: 'templateFieldSeriesParts' },
     { key: 'rating', label: 'templateFieldRating' },
+    { key: 'communityRating', label: 'templateFieldCommunityRating' },
+    { key: 'communityVotes', label: 'templateFieldCommunityVotes' },
+    { key: 'communityRatingProvider', label: 'templateFieldCommunityRatingProvider' },
     { key: 'status', label: 'templateFieldStatus' },
     { key: 'favorite', label: 'templateFieldFavorite' },
     { key: 'integrationSource', label: 'templateFieldIntegrationSource' },
@@ -91,6 +107,7 @@ export const SERIES_TEMPLATE_FIELDS: TemplateFieldDef[] = [
 ];
 
 export const BOOK_TEMPLATE_FIELDS: TemplateFieldDef[] = [
+    { key: 'type', label: 'templateFieldType' },
     { key: 'name', label: 'templateFieldName' },
     { key: 'poster', label: 'templateFieldPoster' },
     { key: 'posterHorizontal', label: 'templateFieldPosterHorizontal' },
@@ -106,6 +123,9 @@ export const BOOK_TEMPLATE_FIELDS: TemplateFieldDef[] = [
     { key: 'chapterCurrent', label: 'templateFieldChapterCurrent' },
     { key: 'chapterTotal', label: 'templateFieldChapterTotal' },
     { key: 'rating', label: 'templateFieldRating' },
+    { key: 'communityRating', label: 'templateFieldCommunityRating' },
+    { key: 'communityVotes', label: 'templateFieldCommunityVotes' },
+    { key: 'communityRatingProvider', label: 'templateFieldCommunityRatingProvider' },
     { key: 'status', label: 'templateFieldStatus' },
     { key: 'favorite', label: 'templateFieldFavorite' },
     { key: 'integrationSource', label: 'templateFieldIntegrationSource' },
@@ -113,6 +133,7 @@ export const BOOK_TEMPLATE_FIELDS: TemplateFieldDef[] = [
 ];
 
 export const MANGA_TEMPLATE_FIELDS: TemplateFieldDef[] = [
+    { key: 'type', label: 'templateFieldType' },
     { key: 'name', label: 'templateFieldName' },
     { key: 'poster', label: 'templateFieldPoster' },
     { key: 'posterHorizontal', label: 'templateFieldPosterHorizontal' },
@@ -128,8 +149,12 @@ export const MANGA_TEMPLATE_FIELDS: TemplateFieldDef[] = [
     { key: 'volumeTotal', label: 'templateFieldVolumeTotal' },
     { key: 'mangaParts', label: 'templateFieldMangaParts' },
     { key: 'rating', label: 'templateFieldRating' },
+    { key: 'communityRating', label: 'templateFieldCommunityRating' },
+    { key: 'communityVotes', label: 'templateFieldCommunityVotes' },
+    { key: 'communityRatingProvider', label: 'templateFieldCommunityRatingProvider' },
     { key: 'status', label: 'templateFieldStatus' },
     { key: 'favorite', label: 'templateFieldFavorite' },
+    { key: 'adult', label: 'editAdult' },
     { key: 'integrationSource', label: 'templateFieldIntegrationSource' },
     { key: 'url', label: 'templateFieldUrl' },
 ];

@@ -1,7 +1,8 @@
 import { Menu, MenuItem } from 'obsidian';
-import { AnimeItem, BookItem, GameItem, MangaItem, MediaItem, MediaStatus, MovieItem, ReadingItem, SeriesItem } from '../../types';
-import { FILTER_ICON_MAP, RATING_EMOJI, STATUS_ICON_MAP } from '../../constants';
+import { AnimeItem, BookItem, GameItem, MediaItem, MediaStatus, MovieItem, RatingBadgeMode, ReadingItem, SeriesItem } from '../../types';
+import { FILTER_ICON_MAP, RATING_CONFIG, RATING_EMOJI, STATUS_ICON_MAP } from '../../constants';
 import { t } from '../../localization';
+import { incrementAnimeEpisode, incrementMangaChapter } from './progressActions';
 
 type MenuItemWithSubmenu = MenuItem & { setSubmenu: () => Menu };
 
@@ -10,8 +11,12 @@ export interface MediaContextMenuDeps {
     getStatusOptions: () => Array<{ status: MediaStatus; label: string }>;
     onApplyFiltersAndSort: () => void;
     onEdit: (item: MediaItem) => void;
+    onOpen: (item: MediaItem) => void;
     onDelete: (item: MediaItem) => void;
+    onSourceAction?: (item: MediaItem, relink: boolean) => void;
     onItemMutated: (item: MediaItem, changedFields: string[]) => void;
+    cardClickAction: 'open' | 'edit';
+    ratingMode: RatingBadgeMode;
     updateAnime: (anime: AnimeItem, updates: Partial<AnimeItem>) => void;
     updateGame: (game: GameItem, updates: Partial<GameItem>) => void;
     updateVideo?: (item: MovieItem | SeriesItem, updates: Partial<MovieItem | SeriesItem>) => void;
@@ -38,7 +43,17 @@ export function showMediaContextMenu(item: MediaItem, x: number, y: number, deps
 
         for (const rating of ratings) {
             sub.addItem((subItem: MenuItem) => {
-                subItem.setTitle(`${RATING_EMOJI[rating.value]} ${rating.label}`)
+                let title: string | DocumentFragment;
+                if (deps.ratingMode === 'star') {
+                    title = createFragment();
+                    const star = title.createSpan({ cls: 'lorebase-context-rating-star', text: '\u2605' });
+                    star.style.color = RATING_CONFIG.find((entry) => entry.value === rating.value)?.color
+                        ?? 'var(--interactive-accent)';
+                    title.createSpan({ text: `${rating.value} \u00b7 ${rating.label}` });
+                } else {
+                    title = `${RATING_EMOJI[rating.value]} ${rating.label}`;
+                }
+                subItem.setTitle(title)
                     .onClick(() => {
                         if (deps.isDestroyed()) return;
                         if (item.type === 'anime') {
@@ -94,24 +109,53 @@ export function showMediaContextMenu(item: MediaItem, x: number, y: number, deps
                         if (deps.isDestroyed()) return;
                         if (item.type === 'anime') {
                             const nextStatus = status as AnimeItem['status'];
+                            const updates: Partial<AnimeItem> = { status: nextStatus };
+                            const changedFields = ['status'];
                             item.status = nextStatus;
-                            deps.onItemMutated(item, ['status']);
-                            deps.updateAnime(item, { status: nextStatus });
+                            if (nextStatus === 'completed' && !item.finished) {
+                                item.finished = getTodayDateInput();
+                                updates.finished = item.finished;
+                                changedFields.push('finished');
+                            }
+                            deps.onItemMutated(item, changedFields);
+                            deps.updateAnime(item, updates);
                         } else if (item.type === 'movie' || item.type === 'series') {
                             const nextStatus = status as MovieItem['status'];
+                            const updates: Partial<MovieItem> = { status: nextStatus };
+                            const changedFields = ['status'];
                             item.status = nextStatus;
-                            deps.onItemMutated(item, ['status']);
-                            deps.updateVideo?.(item, { status: nextStatus });
+                            if (nextStatus === 'completed' && !item.finished) {
+                                item.finished = getTodayDateInput();
+                                updates.finished = item.finished;
+                                changedFields.push('finished');
+                            }
+                            deps.onItemMutated(item, changedFields);
+                            deps.updateVideo?.(item, updates);
                         } else if (item.type === 'book' || item.type === 'manga') {
                             const nextStatus = status as ReadingItem['status'];
+                            const updates: Partial<ReadingItem> = { status: nextStatus };
+                            const changedFields = ['status'];
                             item.status = nextStatus;
-                            deps.onItemMutated(item, ['status']);
-                            deps.updateReading?.(item, { status: nextStatus });
+                            if (nextStatus === 'completed' && !item.finished) {
+                                item.finished = getTodayDateInput();
+                                updates.finished = item.finished;
+                                changedFields.push('finished');
+                            }
+                            deps.onItemMutated(item, changedFields);
+                            deps.updateReading?.(item, updates);
                         } else {
                             const nextStatus = status as GameItem['status'];
+                            const updates: Partial<GameItem> = { status: nextStatus };
                             item.status = nextStatus;
-                            deps.onItemMutated(item, ['status']);
-                            deps.updateGame(item, { status: nextStatus });
+                            const changedFields = ['status'];
+                            if (nextStatus === 'completed' && !item.finished) {
+                                item.finished = getTodayDateInput();
+                                item.dateCompleted = Date.parse(item.finished);
+                                updates.finished = item.finished;
+                                changedFields.push('finished', 'dateCompleted');
+                            }
+                            deps.onItemMutated(item, changedFields);
+                            deps.updateGame(item, updates);
                         }
                     });
             });
@@ -124,56 +168,9 @@ export function showMediaContextMenu(item: MediaItem, x: number, y: number, deps
                 .setIcon('plus')
                 .onClick(() => {
                     if (deps.isDestroyed()) return;
-                    const parts = item.parts?.length ? item.parts.map((part) => ({ ...part })) : [];
-                    const activePart = parts.find((part) => part.id === item.activePartId) ?? parts[0] ?? null;
-                    const currentEpisodeSource = activePart?.episodeCurrent ?? item.episodeCurrent;
-                    const currentEpisode = Number.isFinite(currentEpisodeSource)
-                        ? Math.max(0, Math.trunc(currentEpisodeSource as number))
-                        : 0;
-                    const nextEpisode = currentEpisode + 1;
-                    const updates: Partial<AnimeItem> = {
-                        episodeCurrent: nextEpisode,
-                    };
-                    item.episodeCurrent = nextEpisode;
-                    if (activePart) {
-                        activePart.episodeCurrent = nextEpisode;
-                        const total = Number.isFinite(activePart.episodeTotal)
-                            ? Math.max(0, Math.trunc(activePart.episodeTotal as number))
-                            : null;
-                        if (total && nextEpisode >= total) {
-                            activePart.status = 'completed';
-                        } else if (activePart.status === 'planned') {
-                            activePart.status = 'watching';
-                        }
-                        item.parts = parts;
-                        item.activePartId = activePart.id;
-                        item.seasonCurrent = activePart.seasonNumber;
-                        item.episodeTotal = activePart.episodeTotal;
-                        updates.parts = parts;
-                        updates.activePartId = activePart.id;
-                        updates.seasonCurrent = activePart.seasonNumber;
-                        updates.episodeTotal = activePart.episodeTotal;
-                    }
-
-                    if (item.status === 'planned') {
-                        item.status = 'watching';
-                        updates.status = 'watching';
-                    }
-
-                    const totalEpisodeSource = activePart?.episodeTotal ?? item.episodeTotal;
-                    const totalEpisodes = Number.isFinite(totalEpisodeSource)
-                        ? Math.max(0, Math.trunc(totalEpisodeSource as number))
-                        : null;
-                    if (totalEpisodes && nextEpisode >= totalEpisodes) {
-                        const allPartsCompleted = parts.length > 0 && parts.every((part) => part.status === 'completed');
-                        if (parts.length === 0 || allPartsCompleted) {
-                            item.status = 'completed';
-                            updates.status = 'completed';
-                        }
-                    }
-
-                    deps.onItemMutated(item, ['episodeCurrent', 'episodeTotal', 'seasonCurrent', 'status', 'parts']);
-                    deps.updateAnime(item, updates);
+                    const mutation = incrementAnimeEpisode(item);
+                    deps.onItemMutated(item, mutation.changedFields);
+                    deps.updateAnime(item, mutation.updates);
                 });
         });
     }
@@ -209,47 +206,39 @@ export function showMediaContextMenu(item: MediaItem, x: number, y: number, deps
                 .setIcon('plus')
                 .onClick(() => {
                     if (deps.isDestroyed()) return;
-                    const parts = item.parts?.length ? item.parts.map((part) => ({ ...part })) : [];
-                    const activePart = parts.find((part) => part.id === item.activePartId) ?? parts[0] ?? null;
-                    const currentSource = activePart?.chapterCurrent ?? item.chapterCurrent;
-                    const current = Number.isFinite(currentSource) ? Math.max(0, Math.trunc(currentSource as number)) : 0;
-                    const totalSource = activePart?.chapterTotal ?? item.chapterTotal;
-                    const total = Number.isFinite(totalSource) ? Math.max(0, Math.trunc(totalSource as number)) : null;
-                    const next = total ? Math.min(current + 1, total) : current + 1;
-                    const updates: Partial<MangaItem> = { chapterCurrent: next };
-                    item.chapterCurrent = next;
-                    if (activePart) {
-                        activePart.chapterCurrent = next;
-                        if (total && next >= total) {
-                            activePart.status = 'completed';
-                        } else if (activePart.status === 'planned') {
-                            activePart.status = 'watching';
-                        }
-                        item.parts = parts;
-                        item.activePartId = activePart.id;
-                        item.chapterTotal = activePart.chapterTotal;
-                        item.volumeCurrent = activePart.volumeNumber;
-                        updates.parts = parts;
-                        updates.activePartId = activePart.id;
-                        updates.chapterTotal = activePart.chapterTotal;
-                        updates.volumeCurrent = activePart.volumeNumber;
-                    }
-                    if (item.status === 'planned') {
-                        item.status = 'watching';
-                        updates.status = 'watching';
-                    }
-                    const allPartsCompleted = parts.length > 0 && parts.every((part) => part.status === 'completed');
-                    if ((parts.length === 0 && total && next >= total) || allPartsCompleted) {
-                        item.status = 'completed';
-                        updates.status = 'completed';
-                    }
-                    deps.onItemMutated(item, ['chapterCurrent', 'chapterTotal', 'volumeCurrent', 'status', 'parts']);
-                    deps.updateReading?.(item, updates);
+                    const mutation = incrementMangaChapter(item);
+                    deps.onItemMutated(item, mutation.changedFields);
+                    deps.updateReading?.(item, mutation.updates);
                 });
         });
     }
 
     menu.addSeparator();
+
+    if (deps.onSourceAction) {
+        const connected = Boolean(item.integrationProvider && item.integrationId);
+        menu.addItem((menuItem) => {
+            menuItem
+                .setTitle(connected ? t('contextSourceRefresh') : t('contextSourceLink'))
+                .setIcon(connected ? 'refresh-cw' : 'link-2')
+                .onClick(() => {
+                    if (deps.isDestroyed()) return;
+                    deps.onSourceAction?.(item, false);
+                });
+        });
+        if (connected) {
+            menu.addItem((menuItem) => {
+                menuItem
+                    .setTitle(t('contextSourceChange'))
+                    .setIcon('repeat-2')
+                    .onClick(() => {
+                        if (deps.isDestroyed()) return;
+                        deps.onSourceAction?.(item, true);
+                    });
+            });
+        }
+        menu.addSeparator();
+    }
 
     menu.addItem((menuItem) => {
         menuItem.setTitle(item.favorite ? t('contextRemoveFavorite') : t('contextAddFavorite'))
@@ -273,11 +262,13 @@ export function showMediaContextMenu(item: MediaItem, x: number, y: number, deps
     menu.addSeparator();
 
     menu.addItem((menuItem) => {
-        menuItem.setTitle(t('contextEdit'))
-            .setIcon('pencil')
+        const opensEditorOnClick = deps.cardClickAction === 'edit';
+        menuItem.setTitle(opensEditorOnClick ? t('editOpen') : t('contextEdit'))
+            .setIcon(opensEditorOnClick ? 'file-text' : 'pencil')
             .onClick(() => {
                 if (deps.isDestroyed()) return;
-                deps.onEdit(item);
+                if (opensEditorOnClick) deps.onOpen(item);
+                else deps.onEdit(item);
             });
     });
 
@@ -291,4 +282,12 @@ export function showMediaContextMenu(item: MediaItem, x: number, y: number, deps
     });
 
     menu.showAtPosition({ x, y });
+}
+
+function getTodayDateInput(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
 }
