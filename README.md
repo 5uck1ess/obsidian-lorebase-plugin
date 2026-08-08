@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Obsidian-Plugin-7C3AED?style=for-the-badge&logo=obsidian&logoColor=white" alt="Obsidian Plugin" />
-  <img src="https://img.shields.io/badge/Version-3.0.0-e4a47e?style=for-the-badge" alt="Version" />
+  <img src="https://img.shields.io/badge/Version-3.0.1-e4a47e?style=for-the-badge" alt="Version" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License" />
   <img src="https://img.shields.io/badge/TypeScript-5.3-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
 </p>
@@ -740,7 +740,7 @@ All core UI elements, status labels, settings descriptions, and error messages a
 ## 📋 Changelog
 
 <details open>
-<summary><strong>v3.0.0</strong></summary>
+<summary><strong>v3.0.1</strong></summary>
 <br />
 
 > ⚠️ **Mobile UI is in active development.** The reworked mobile interface for the library, add, and edit flows is an early alpha — expect rough edges while it's polished over the next few releases.
