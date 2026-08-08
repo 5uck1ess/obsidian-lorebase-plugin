@@ -162,8 +162,12 @@ export class GameCard {
         const imageContainer = this.container.createDiv({ cls: 'lorebase-card-image' });
         if (!isHorizontal) {
             const sizes = CARD_SIZES[this.cardSize];
-            const verticalMinHeight = this.dimensionOverrides?.verticalMinHeight
-                ?? this.parseCssPixels(sizes.minHeight, 380);
+            const ownerWindow = this.container.ownerDocument.defaultView;
+            const isPhoneLayout = ownerWindow?.matchMedia('(max-width: 520px)').matches ?? false;
+            const verticalMinHeight = isPhoneLayout
+                ? 0
+                : this.dimensionOverrides?.verticalMinHeight
+                    ?? this.parseCssPixels(sizes.minHeight, 380);
             imageContainer.setCssStyles({ minHeight: `${verticalMinHeight}px` });
             // verticalImageRatio = width/height from user's custom setting.
             // For CSS aspect-ratio we need width/height; portrait = ratio < 1.

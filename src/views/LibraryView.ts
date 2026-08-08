@@ -1069,7 +1069,10 @@ export class LibraryView extends ItemView {
     }
 
     private updateRenderedGridColumns(columns: number): void {
-        const safeColumns = Math.max(1, columns);
+        const ownerWindow = this.containerEl.ownerDocument.defaultView;
+        const safeColumns = ownerWindow?.matchMedia('(max-width: 520px)').matches
+            ? 2
+            : Math.max(1, columns);
         const template = `repeat(${safeColumns}, minmax(0, 1fr))`;
         this.libraryContentEl?.querySelectorAll<HTMLElement>('.lorebase-grid').forEach((grid) => {
             grid.style.gridTemplateColumns = template;

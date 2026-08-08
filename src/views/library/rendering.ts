@@ -27,11 +27,13 @@ export interface RenderRandomCardParams {
 export function createGrid(params: RenderFlatGridParams): HTMLElement {
     const { container, layout, className = 'lorebase-grid' } = params;
     const gridEl = container.createDiv({ cls: className });
+    const ownerWindow = container.ownerDocument.defaultView;
+    const isPhoneLayout = ownerWindow?.matchMedia('(max-width: 520px)').matches ?? false;
     gridEl.setCssStyles({
         position: 'relative',
-        gridTemplateColumns: `repeat(${Math.max(1, layout.columns)}, minmax(0, 1fr))`,
-        gap: '16px',
-        padding: '16px',
+        gridTemplateColumns: `repeat(${isPhoneLayout ? 2 : Math.max(1, layout.columns)}, minmax(0, 1fr))`,
+        gap: isPhoneLayout ? '10px' : '16px',
+        padding: isPhoneLayout ? '10px' : '16px',
     });
 
     return gridEl;
