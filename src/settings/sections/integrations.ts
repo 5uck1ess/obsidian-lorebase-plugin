@@ -938,20 +938,6 @@ function formatDiagnosticRemaining(milliseconds: number): string {
 }
 
 async function copyDiagnosticText(text: string): Promise<void> {
-    if (navigator.clipboard?.writeText) {
-        try {
-            await navigator.clipboard.writeText(text);
-            return;
-        } catch {
-            // Fall back to the document copy command below.
-        }
-    }
-    const input = document.body.createEl('textarea');
-    input.value = text;
-    input.setAttr('readonly', 'true');
-    input.setCssStyles({ position: 'fixed', opacity: '0', pointerEvents: 'none' });
-    input.select();
-    const copied = document.execCommand('copy');
-    input.remove();
-    if (!copied) throw new Error('Unable to copy integration diagnostics.');
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard API is unavailable.');
+    await navigator.clipboard.writeText(text);
 }

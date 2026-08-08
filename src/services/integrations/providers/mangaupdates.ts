@@ -284,7 +284,11 @@ function setCached<T>(
     cache.delete(key);
     cache.set(key, { expiresAt: Date.now() + ttlMs, value });
     while (cache.size > maxEntries) {
-        const oldestKey = cache.keys().next().value;
+        let oldestKey: string | undefined;
+        for (const cacheKey of cache.keys()) {
+            oldestKey = cacheKey;
+            break;
+        }
         if (!oldestKey) break;
         cache.delete(oldestKey);
     }

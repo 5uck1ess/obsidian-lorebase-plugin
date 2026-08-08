@@ -2311,7 +2311,7 @@
    Header padding-top = 10px, button padding = 7px, line-height = 1 → button
    vertical center ≈ 24px from modal top.  We force the close control to sit
    at the same row so it reads as a natural continuation of the header-right. */
-body:has(.lorebase-editmode-modal-shell) .modal-close-button {
+.modal.lorebase-editmode-modal-shell > .modal-close-button {
     top: 6px !important;
     inset-inline-end: 12px !important;
     width: 30px !important;
@@ -3799,7 +3799,7 @@ body:has(.lorebase-editmode-modal-shell) .modal-close-button {
 .lorebase-editmode-title-meta .lorebase-editmode-genres-field {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    column-gap: 12px;
+    gap: 0 12px;
     align-items: start;
     min-height: 32px;
 }
@@ -4111,7 +4111,6 @@ body:has(.lorebase-editmode-modal-shell) .modal-close-button {
 
 .lorebase-editmode-anime-episode-stepper {
     display: grid;
-    min-height: 26px;
     width: 100%;
     max-width: none;
     min-height: 35px;
@@ -12430,7 +12429,7 @@ button.lorebase-steamgriddb-chevron.is-open {
 }
 
 @media (max-width: 520px) {
-    .lorebase-card-badge-group:has(.lorebase-card-status) {
+    .lorebase-card-badge-group.has-status {
         left: 6px !important;
         right: 6px !important;
         width: auto;

@@ -12,7 +12,7 @@ export function setupMobileEditor(root: HTMLElement, onSave: () => void): void {
     annotatePanels(root);
     createMobileSummary(root);
 
-    const tabs = document.createElement('nav');
+    const tabs = createEl('nav');
     tabs.className = 'lorebase-editmode-mobile-tabs';
     tabs.setAttribute('aria-label', t('editGeneral'));
     const definitions: Array<{ pane: MobilePane; label: string }> = [
@@ -21,7 +21,7 @@ export function setupMobileEditor(root: HTMLElement, onSave: () => void): void {
         { pane: 'more', label: t('editMore') },
     ];
     for (const definition of definitions) {
-        const button = document.createElement('button');
+        const button = createEl('button');
         button.type = 'button';
         button.className = `lorebase-editmode-mobile-tab ${definition.pane === 'general' ? 'is-active' : ''}`;
         button.dataset.mobileTabTarget = definition.pane;
@@ -40,9 +40,9 @@ export function setupMobileEditor(root: HTMLElement, onSave: () => void): void {
     }
     grid.before(tabs);
 
-    const footer = document.createElement('footer');
+    const footer = createEl('footer');
     footer.className = 'lorebase-editmode-mobile-footer';
-    const save = document.createElement('button');
+    const save = createEl('button');
     save.type = 'button';
     save.className = 'lorebase-editmode-btn lorebase-editmode-btn-primary';
     save.textContent = t('editSave');
@@ -77,10 +77,10 @@ function createMobileSummary(root: HTMLElement): void {
     if (!posterCard || posterCard.querySelector('.lorebase-editmode-mobile-summary')) return;
     const titleInput = root.querySelector<HTMLInputElement>('[data-field="title"]');
     const yearInput = root.querySelector<HTMLInputElement>('[data-field="year"]');
-    const summary = document.createElement('div');
+    const summary = createDiv();
     summary.className = 'lorebase-editmode-mobile-summary';
-    const title = document.createElement('strong');
-    const meta = document.createElement('span');
+    const title = createEl('strong');
+    const meta = createSpan();
     summary.append(title, meta);
     posterCard.appendChild(summary);
 

@@ -36,7 +36,7 @@ function yieldToNextFrame(): Promise<void> {
             window.requestAnimationFrame(() => resolve());
             return;
         }
-        setTimeout(resolve, 0);
+        window.setTimeout(resolve, 0);
     });
 }
 

@@ -242,13 +242,15 @@ function renderMappingEditor(
     const resetButton = actions.createEl('button', { cls: 'lorebase-note-import-small-button', attr: { type: 'button' } });
     setIcon(resetButton.createSpan({ cls: 'lorebase-note-import-small-button-icon' }), 'rotate-ccw');
     resetButton.createSpan({ text: importText(language, 'resetMappings') });
-    resetButton.addEventListener('click', async () => {
-        settings.fieldMappings = DEFAULT_NOTE_IMPORT_FIELD_MAPPINGS.map((mapping) => ({
-            key: mapping.key,
-            aliases: [...mapping.aliases],
-        }));
-        await context.plugin.saveSettings();
-        context.display();
+    resetButton.addEventListener('click', () => {
+        void (async (): Promise<void> => {
+            settings.fieldMappings = DEFAULT_NOTE_IMPORT_FIELD_MAPPINGS.map((mapping) => ({
+                key: mapping.key,
+                aliases: [...mapping.aliases],
+            }));
+            await context.plugin.saveSettings();
+            context.display();
+        })();
     });
 
     const list = wrapper.createDiv({ cls: 'lorebase-note-import-mapping-list' });
@@ -288,10 +290,12 @@ function renderMappingEditor(
             attr: { type: 'button', 'aria-label': t('settingsPlanRemove') },
         });
         setIcon(removeButton, 'trash-2');
-        removeButton.addEventListener('click', async () => {
-            settings.fieldMappings.splice(index, 1);
-            await context.plugin.saveSettings();
-            context.display();
+        removeButton.addEventListener('click', () => {
+            void (async (): Promise<void> => {
+                settings.fieldMappings.splice(index, 1);
+                await context.plugin.saveSettings();
+                context.display();
+            })();
         });
     });
 }
@@ -323,10 +327,12 @@ function renderBlacklistSetting(
         });
         chip.createSpan({ cls: 'lorebase-note-import-blacklist-chip-text', text: field });
         setIcon(chip.createSpan({ cls: 'lorebase-note-import-blacklist-chip-icon' }), 'x');
-        chip.addEventListener('click', async () => {
-            settings.blacklist.splice(index, 1);
-            await context.plugin.saveSettings();
-            context.display();
+        chip.addEventListener('click', () => {
+            void (async (): Promise<void> => {
+                settings.blacklist.splice(index, 1);
+                await context.plugin.saveSettings();
+                context.display();
+            })();
         });
     });
 

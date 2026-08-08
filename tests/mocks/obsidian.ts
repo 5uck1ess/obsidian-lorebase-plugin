@@ -54,7 +54,9 @@ export class Notice {
 
 if (typeof window === 'undefined') {
     Object.defineProperty(globalThis, 'window', {
-        value: { setTimeout },
+        value: {
+            setTimeout: (...args: Parameters<typeof setTimeout>) => setTimeout(...args),
+        },
         configurable: true,
     });
 }

@@ -79,7 +79,11 @@ export class VirtualGrid<T> {
     setLayoutResizing(resizing: boolean): void {
         this.options.gridEl.toggleClass('is-virtual-layout-resizing', resizing);
         if (resizing) {
-            const firstVisibleCard = this.visibleCards.values().next().value as GameCard | undefined;
+            let firstVisibleCard: GameCard | undefined;
+            for (const card of this.visibleCards.values()) {
+                firstVisibleCard = card;
+                break;
+            }
             const visibleHeight = firstVisibleCard?.getElement().getBoundingClientRect().height;
             const lockedHeight = visibleHeight && visibleHeight > 0 ? visibleHeight : this.options.cardHeight;
             this.options.gridEl.style.setProperty('--lorebase-virtual-card-height', `${lockedHeight}px`);
@@ -245,7 +249,11 @@ export class VirtualGroupedGrid<T> implements VirtualGridController {
     setLayoutResizing(resizing: boolean): void {
         this.options.gridEl.toggleClass('is-virtual-layout-resizing', resizing);
         if (resizing) {
-            const firstVisibleCard = this.visibleCards.values().next().value as GameCard | undefined;
+            let firstVisibleCard: GameCard | undefined;
+            for (const card of this.visibleCards.values()) {
+                firstVisibleCard = card;
+                break;
+            }
             const visibleHeight = firstVisibleCard?.getElement().getBoundingClientRect().height;
             const lockedHeight = visibleHeight && visibleHeight > 0 ? visibleHeight : this.options.cardHeight;
             this.options.gridEl.style.setProperty('--lorebase-virtual-card-height', `${lockedHeight}px`);

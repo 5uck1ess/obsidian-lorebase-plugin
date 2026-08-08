@@ -488,15 +488,19 @@ function readSourceSnapshot(
     const hashes = asRecord(record.hashes);
     const lists = asRecord(record.lists);
     if (!hashes || !lists) return null;
+    const normalizedHashes: Record<string, string> = {};
+    for (const [key, entry] of Object.entries(hashes)) {
+        if (typeof entry === 'string') normalizedHashes[key] = entry;
+    }
+    const normalizedLists: Record<string, unknown[]> = {};
+    for (const [key, entry] of Object.entries(lists)) {
+        if (Array.isArray(entry)) normalizedLists[key] = entry;
+    }
     return {
         version: 1,
         provider: record.provider as ProviderId,
         id: String(record.id),
-        hashes: Object.fromEntries(
-            Object.entries(hashes).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
-        ),
-        lists: Object.fromEntries(
-            Object.entries(lists).filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]))
-        ),
+        hashes: normalizedHashes,
+        lists: normalizedLists,
     };
 }

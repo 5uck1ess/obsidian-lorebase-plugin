@@ -298,13 +298,14 @@ export function groupMediaItems(
 
 function normalizeRules(raw: unknown): FilterRule[] {
     if (!Array.isArray(raw)) return [];
-    return raw.flatMap((entry): FilterRule[] => {
+    const rules: FilterRule[] = [];
+    for (const entry of raw) {
         const record = asRecord(entry);
         const id = typeof record?.id === 'string' ? record.id : '';
         const field = typeof record?.field === 'string' ? record.field : '';
         const fieldType = normalizeFieldType(record?.fieldType);
         const operator = normalizeOperator(record?.operator);
-        if (!id || !field || !fieldType || !operator) return [];
+        if (!id || !field || !fieldType || !operator) continue;
         const value = Array.isArray(record?.value)
             ? record.value.map(String)
             : typeof record?.value === 'string'
@@ -313,8 +314,9 @@ function normalizeRules(raw: unknown): FilterRule[] {
                 || record?.value === null
                 ? record.value
                 : undefined;
-        return [{ id, field, fieldType, operator, value, valueTo: normalizeRuleScalar(record?.valueTo) }];
-    });
+        rules.push({ id, field, fieldType, operator, value, valueTo: normalizeRuleScalar(record?.valueTo) });
+    }
+    return rules;
 }
 
 function normalizeSortField(value: unknown, fallback: SortField): SortField {

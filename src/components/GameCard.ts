@@ -433,7 +433,9 @@ export class GameCard {
         };
 
         if (this.badges.status.enabled) {
-            this.renderStatusBadge(getGroup(this.badges.status.position));
+            const statusGroup = getGroup(this.badges.status.position);
+            statusGroup.addClass('has-status');
+            this.renderStatusBadge(statusGroup);
         }
 
         if (this.badges.rating.enabled && this.game.userRating) {

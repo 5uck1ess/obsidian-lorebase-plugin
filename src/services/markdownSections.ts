@@ -20,7 +20,7 @@ export function upsertMarkdownSection(content: string, heading: string = MY_NOTE
     const sectionText = normalized ? `## ${heading}\n\n${normalized}` : '';
 
     if (!start || start.index === undefined) {
-        return sectionText ? `${content.trimEnd()}\n\n${sectionText}\n` : content;
+        return sectionText ? `${trimEnd(content)}\n\n${sectionText}\n` : content;
     }
 
     const sectionStart = start.index;
@@ -28,11 +28,11 @@ export function upsertMarkdownSection(content: string, heading: string = MY_NOTE
     const rest = content.slice(bodyStart);
     const next = rest.search(/^##\s+/im);
     const sectionEnd = next >= 0 ? bodyStart + next : content.length;
-    const before = content.slice(0, sectionStart).trimEnd();
+    const before = trimEnd(content.slice(0, sectionStart));
     const after = content.slice(sectionEnd).replace(/^\s*\n/, '');
 
     if (!sectionText) {
-        return `${before}${after ? `\n\n${after.trimStart()}` : ''}`;
+        return `${before}${after ? `\n\n${trimStart(after)}` : ''}`;
     }
 
     return after
@@ -42,4 +42,12 @@ export function upsertMarkdownSection(content: string, heading: string = MY_NOTE
 
 function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function trimEnd(value: string): string {
+    return value.replace(/\s+$/, '');
+}
+
+function trimStart(value: string): string {
+    return value.replace(/^\s+/, '');
 }

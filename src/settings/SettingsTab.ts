@@ -36,6 +36,21 @@ interface SettingsSectionDefinition {
     render: (container: HTMLElement) => void;
 }
 
+interface DeclarativeSettingPage {
+    type: 'page';
+    name: string;
+    desc: string;
+    items: Array<{
+        name: string;
+        desc: string;
+        render: (setting: Setting) => void;
+    }>;
+}
+
+interface DeclarativeSettingsHost {
+    update?: () => void;
+}
+
 export class LorebaseSettingTab extends PluginSettingTab {
     plugin: LorebasePlugin;
     private activeMediaTabs: Record<MediaTabScope, MediaTypeKey> = {
@@ -49,6 +64,24 @@ export class LorebaseSettingTab extends PluginSettingTab {
     constructor(app: App, plugin: LorebasePlugin) {
         super(app, plugin);
         this.plugin = plugin;
+    }
+
+    getSettingDefinitions(): DeclarativeSettingPage[] {
+        const sections = this.getSectionDefinitions(this.getSectionContext());
+        return sections.map((section) => ({
+            type: 'page',
+            name: section.label,
+            desc: section.description,
+            items: [{
+                name: section.label,
+                desc: section.description,
+                render: (setting) => {
+                    setting.settingEl.empty();
+                    setting.settingEl.addClass('lorebase-settings-declarative-section');
+                    section.render(setting.settingEl);
+                },
+            }],
+        }));
     }
 
     display(): void {
@@ -269,7 +302,7 @@ export class LorebaseSettingTab extends PluginSettingTab {
         return {
             app: this.app,
             plugin: this.plugin,
-            display: () => this.display(),
+            display: () => this.refreshSettings(),
             createSectionHeader: (container, icon, text) => this.createSectionHeader(container, icon, text),
             createCollapsibleGroup: (container, title, description, open) => this.createCollapsibleGroup(container, title, description, open),
             getActiveMediaTab: (scope) => this.activeMediaTabs[scope],
@@ -278,6 +311,15 @@ export class LorebaseSettingTab extends PluginSettingTab {
             },
             applyAccentColor: (color) => this.applyAccentColor(color),
         };
+    }
+
+    private refreshSettings(): void {
+        const declarativeHost = this as LorebaseSettingTab & DeclarativeSettingsHost;
+        if (typeof declarativeHost.update === 'function') {
+            declarativeHost.update();
+            return;
+        }
+        this.display();
     }
 
     private applyAccentColor(color: string): void {

@@ -219,10 +219,17 @@ function normalizeStatus(status: number): number {
 
 function sanitizeDiagnosticLabel(value: string, maxLength: number): string {
     return value
-        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .split('')
+        .map((character) => isControlCharacter(character) ? ' ' : character)
+        .join('')
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, maxLength);
+}
+
+function isControlCharacter(character: string): boolean {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
 }
 
 function sanitizeDiagnosticId(value: string): string {

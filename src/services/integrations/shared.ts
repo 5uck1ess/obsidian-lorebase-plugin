@@ -544,5 +544,5 @@ function formatWaitTime(milliseconds: number): string {
 async function waitUntil(timestamp: number): Promise<void> {
     const delayMs = timestamp - Date.now();
     if (delayMs <= 0) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
 }

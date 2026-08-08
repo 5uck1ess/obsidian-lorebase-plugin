@@ -69,29 +69,30 @@ export function createLorebaseDropdown<T extends string>(
             Math.max(160, viewportWidth - edge * 2)
         );
 
-        panel.style.position = 'fixed';
-        panel.style.width = `${width}px`;
-        panel.style.minWidth = `${width}px`;
-        panel.style.maxWidth = `${width}px`;
-        panel.style.left = `${Math.min(
-            Math.max(edge, buttonRect.left),
-            Math.max(edge, viewportWidth - width - edge)
-        )}px`;
-        panel.style.top = '0px';
-        panel.style.visibility = 'hidden';
+        panel.setCssStyles({
+            position: 'fixed',
+            width: `${width}px`,
+            minWidth: `${width}px`,
+            maxWidth: `${width}px`,
+            left: `${Math.min(
+                Math.max(edge, buttonRect.left),
+                Math.max(edge, viewportWidth - width - edge)
+            )}px`,
+            top: '0px',
+            visibility: 'hidden',
+        });
 
         const spaceBelow = Math.max(0, viewportHeight - buttonRect.bottom - gap - edge);
         const spaceAbove = Math.max(0, buttonRect.top - gap - edge);
         const openAbove = spaceBelow < 180 && spaceAbove > spaceBelow;
         const availableHeight = Math.max(96, openAbove ? spaceAbove : spaceBelow);
-        panel.style.maxHeight = `${Math.min(320, availableHeight)}px`;
+        panel.setCssStyles({ maxHeight: `${Math.min(320, availableHeight)}px` });
 
         const panelHeight = panel.getBoundingClientRect().height;
         const top = openAbove
             ? Math.max(edge, buttonRect.top - gap - panelHeight)
             : Math.min(buttonRect.bottom + gap, viewportHeight - edge - panelHeight);
-        panel.style.top = `${Math.max(edge, top)}px`;
-        panel.style.visibility = '';
+        panel.setCssStyles({ top: `${Math.max(edge, top)}px`, visibility: '' });
     };
 
     const close = (): void => {

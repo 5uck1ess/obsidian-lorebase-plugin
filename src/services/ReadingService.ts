@@ -56,7 +56,8 @@ export class ReadingService {
     parseFromCache(file: TFile): ReadingItem | null {
         try {
             const cache = this.app.metadataCache.getFileCache(file);
-            const metadata = cache?.frontmatter || {};
+            const rawMetadata: unknown = cache?.frontmatter;
+            const metadata = isRecord(rawMetadata) ? rawMetadata : {};
             const rawType = typeof metadata.type === 'string' ? metadata.type.trim().toLowerCase() : '';
             if (rawType && rawType !== this.mediaType) return null;
 
@@ -565,4 +566,8 @@ export class ReadingService {
         }
         return result;
     }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -28,6 +28,11 @@ export interface SteamOwnedGame {
     iconUrl: string;
 }
 
+function isControlCharacter(character: string): boolean {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+}
+
 export interface SteamWishlistGame {
     appId: number;
     name: string;
@@ -429,7 +434,9 @@ export class SteamSyncService {
                 /\b(api[_ -]?key|token|authorization|client[_ -]?secret|password)\b\s*[:=]\s*[^\s,;]+/gi,
                 '$1=[hidden]'
             )
-            .replace(/[\u0000-\u001f\u007f]/g, ' ')
+            .split('')
+            .map((character) => isControlCharacter(character) ? ' ' : character)
+            .join('')
             .replace(/\s+/g, ' ')
             .trim()
             .slice(0, 240);

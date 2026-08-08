@@ -566,7 +566,7 @@ export class Toolbar {
             operators.map((value) => ({ value, label: this.operatorLabel(value) })),
             rule.operator,
             (value) => {
-                rule.operator = value as FilterOperator;
+                rule.operator = value;
                 this.emitViewState(button);
                 this.renderViewPanel(panel, button);
             },
@@ -652,7 +652,7 @@ export class Toolbar {
     }
 
     private createOrderButton(order: SortOrder, onChange: (order: SortOrder) => void): HTMLButtonElement {
-        const button = document.createElement('button');
+        const button = createEl('button');
         button.className = 'lorebase-view-order-button';
         button.type = 'button';
         button.setAttribute('aria-label', t('sortOrder'));

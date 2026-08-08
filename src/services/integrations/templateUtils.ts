@@ -312,7 +312,9 @@ function applySimpleTemplateFieldOrder(kind: MediaKind, fields: string[], lines:
         return leftOrder - rightOrder || left.index - right.index;
     });
 
-    return [...fixedLines, ...blocks.flatMap((block) => block.lines)];
+    const sortedLines = [...fixedLines];
+    for (const block of blocks) sortedLines.push(...block.lines);
+    return sortedLines;
 }
 
 function appendCommunityRatingFields(set: Set<string>, lines: string[]): void {

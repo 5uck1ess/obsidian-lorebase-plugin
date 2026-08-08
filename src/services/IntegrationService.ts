@@ -1225,7 +1225,11 @@ export class IntegrationService {
         const cacheTtlMs = provider === 'mangaupdates' ? 20 * 60_000 : 60_000;
         this.searchCache.set(cacheKey, { expiresAt: Date.now() + cacheTtlMs, results });
         if (this.searchCache.size > 80) {
-            const oldestKey = this.searchCache.keys().next().value;
+            let oldestKey: string | undefined;
+            for (const key of this.searchCache.keys()) {
+                oldestKey = key;
+                break;
+            }
             if (oldestKey) this.searchCache.delete(oldestKey);
         }
         return results;

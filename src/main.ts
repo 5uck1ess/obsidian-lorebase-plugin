@@ -38,7 +38,7 @@ import {
     parseBadges,
 } from './settings/settingsNormalization';
 import { parseRelatedMedia } from './services/media/parsers';
-import type { MediaKind, MediaSourceSelection, ProviderId } from './services/integrations/types';
+import type { MediaKind, MediaSourceSelection } from './services/integrations/types';
 import { buildSimpleTemplate, getDefaultTemplateFields, getEffectiveSimpleTemplateFields } from './services/integrations/templateUtils';
 import { mediaTypeToKind, synchronizeProviderMetadata } from './services/integrations/enrichment';
 
@@ -1047,7 +1047,7 @@ export default class LorebasePlugin extends Plugin {
 
             let source: MediaSourceSelection | null = null;
             const provider = typeof item.integrationProvider === 'string'
-                ? item.integrationProvider as ProviderId
+                ? item.integrationProvider
                 : null;
             const id = item.integrationId ? String(item.integrationId).trim() : '';
             if (!relink && provider && id) {
