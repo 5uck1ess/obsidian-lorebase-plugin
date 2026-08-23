@@ -580,7 +580,11 @@ export class IntegrationService {
 
     private async addManualMedia(defaultKind: MediaKind): Promise<void> {
         try {
-            const draft = await new ManualCreateModal(this.app, defaultKind).openAndGetValue();
+            const draft = await new ManualCreateModal(
+                this.app,
+                defaultKind,
+                this.getSettings().ratingScale
+            ).openAndGetValue();
             if (!draft) return;
 
             const settings = this.getSettings();

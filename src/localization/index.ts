@@ -73,6 +73,7 @@ export type TranslationKey =
     | 'settingsBadgesPosition'
     | 'settingsBadgesPosTopLeft' | 'settingsBadgesPosTopRight' | 'settingsBadgesPosBottomLeft' | 'settingsBadgesPosBottomRight'
     | 'settingsDescLanguage' | 'settingsDescColor' | 'settingsDescFolder'
+    | 'settingsRatingScale' | 'settingsRatingScaleDesc'
     | 'settingsDescColumns' | 'settingsDescOrientation' | 'settingsDescShowAdult' | 'settingsDescReset'
     | 'settingsIntegrations' | 'settingsIntegrationsEnable' | 'settingsIntegrationsEnableDesc'
     | 'settingsIntegrationsRequestCooldown' | 'settingsIntegrationsRequestCooldownDesc'
@@ -199,6 +200,9 @@ export type TranslationKey =
     | 'deleteTitleMovie' | 'deleteSubtitleMovie' | 'deleteConfirmAckMovie'
     | 'deleteTitleSeries' | 'deleteSubtitleSeries' | 'deleteConfirmAckSeries'
     | 'deleteTitleReading' | 'deleteSubtitleReading' | 'deleteConfirmAckReading'
+    | 'relocateTitle' | 'relocateBody' | 'relocateNotesLabel'
+    | 'relocateFromLabel' | 'relocateToLabel' | 'relocateMove'
+    | 'relocateChangeOnly' | 'relocateMovedSuffix' | 'relocateFailedSuffix'
     // Notifications
     | 'notifyLoading'
     | 'commandOpenLibrary'
@@ -325,6 +329,8 @@ const EN: Record<TranslationKey, string> = {
     settingsShowAddModeChoice: 'Show add choice',
     settingsShowAddModeChoiceDesc: 'Choose between provider search and manual creation when pressing plus. Disable to open provider search directly.',
     settingsLanguage: 'Language',
+    settingsRatingScale: 'Rating scale',
+    settingsRatingScaleDesc: 'Maximum personal rating. 1-5 shows a five-star picker; 1-10 shows a number dropdown. Existing ratings are never changed.',
     settingsReset: 'Reset settings',
     settingsMediaGames: 'Show games',
     settingsMediaAnime: 'Show anime',
@@ -893,6 +899,15 @@ const EN: Record<TranslationKey, string> = {
     commonCancel: 'Cancel',
     commonBack: 'Back',
     commonNoData: 'No data',
+    relocateTitle: 'Move library notes?',
+    relocateBody: 'Notes in the previous folder are not moved automatically. Move them to the new folder now?',
+    relocateNotesLabel: 'notes',
+    relocateFromLabel: 'From',
+    relocateToLabel: 'To',
+    relocateMove: 'Move notes',
+    relocateChangeOnly: 'Just change folder',
+    relocateMovedSuffix: 'moved',
+    relocateFailedSuffix: 'could not be moved',
 };
 
 /** Russian translations */
@@ -987,6 +1002,8 @@ const RU: Record<TranslationKey, string> = {
     settingsShowAddModeChoice: 'Показывать выбор добавления',
     settingsShowAddModeChoiceDesc: 'При нажатии на плюс выбирать между поиском через провайдер и ручным созданием. Если выключено, сразу открывается поиск.',
     settingsLanguage: 'Язык',
+    settingsRatingScale: 'Шкала оценки',
+    settingsRatingScaleDesc: 'Максимальная личная оценка. 1-5 — выбор из пяти звёзд; 1-10 — выпадающий список с числом. Существующие оценки не изменяются.',
     settingsReset: 'Сбросить настройки',
     settingsMediaGames: 'Показывать игры',
     settingsMediaAnime: 'Показывать аниме',
@@ -1555,6 +1572,15 @@ const RU: Record<TranslationKey, string> = {
     commonCancel: 'Отмена',
     commonBack: 'Назад',
     commonNoData: 'Нет данных',
+    relocateTitle: 'Переместить заметки библиотеки?',
+    relocateBody: 'Заметки из прежней папки не переносятся автоматически. Переместить их в новую папку?',
+    relocateNotesLabel: 'заметок',
+    relocateFromLabel: 'Из',
+    relocateToLabel: 'В',
+    relocateMove: 'Переместить заметки',
+    relocateChangeOnly: 'Только сменить папку',
+    relocateMovedSuffix: 'перемещено',
+    relocateFailedSuffix: 'не удалось переместить',
 };
 
 /** Ukrainian translations. Uses Russian as a safety fallback for rarely used strings until community review is complete. */
@@ -1650,6 +1676,8 @@ const UK: Record<TranslationKey, string> = {
     settingsShowAddModeChoice: 'Показувати вибір додавання',
     settingsShowAddModeChoiceDesc: 'Під час натискання плюса вибирати між пошуком через провайдер і ручним створенням. Вимкніть, щоб одразу відкривати пошук.',
     settingsLanguage: 'Мова',
+    settingsRatingScale: 'Шкала оцінювання',
+    settingsRatingScaleDesc: 'Максимальна особиста оцінка. 1-5 показує п’ять зірок; 1-10 — числовий список. Наявні оцінки не змінюються.',
     settingsReset: 'Скинути налаштування',
     settingsMediaGames: 'Показувати ігри',
     settingsMediaAnime: 'Показувати аніме',
@@ -2214,6 +2242,15 @@ const UK: Record<TranslationKey, string> = {
     commonCancel: 'Скасувати',
     commonBack: 'Назад',
     commonNoData: 'Немає даних',
+    relocateTitle: 'Перемістити нотатки бібліотеки?',
+    relocateBody: 'Нотатки з попередньої папки не переміщуються автоматично. Перемістити їх до нової папки зараз?',
+    relocateNotesLabel: 'нотаток',
+    relocateFromLabel: 'З',
+    relocateToLabel: 'До',
+    relocateMove: 'Перемістити нотатки',
+    relocateChangeOnly: 'Лише змінити папку',
+    relocateMovedSuffix: 'переміщено',
+    relocateFailedSuffix: 'не вдалося перемістити',
 };
 
 // =============================================================================

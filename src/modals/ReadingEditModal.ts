@@ -1,7 +1,8 @@
 import { App, Menu, Modal, setIcon, TFile } from 'obsidian';
 import { DEFAULT_COVER, STATUS_CONFIG } from '../constants';
 import { i18n, t } from '../localization';
-import { BookItem, MangaItem, MangaPart, ReadingItem, ReadingStatus, RelatedMediaLink, UserRating } from '../types';
+import { BookItem, MangaItem, MangaPart, RatingScale, ReadingItem, ReadingStatus, RelatedMediaLink, UserRating } from '../types';
+import { clampRating, ratingFillPct, ratingReadout } from '../services/ratingScale';
 import { GenreEditModal } from './GenreEditModal';
 import { CommunityRatingRefresh, renderCommunityRatingPanel } from './CommunityRatingPanel';
 import { MediaSourceAction, renderMediaSourcePanel } from './MediaSourcePanel';
@@ -28,6 +29,7 @@ export class ReadingEditModal extends Modal {
     private onSave: (updates: ReadingUpdates) => Promise<void>;
     private onDelete: () => void;
     private onRefreshCommunityRating?: CommunityRatingRefresh;
+    private ratingScale: RatingScale;
 
     private title: string;
     private poster: string;
@@ -86,13 +88,15 @@ export class ReadingEditModal extends Modal {
         relatedCandidates: RelatedMediaLink[] = [],
         incomingRelated: RelatedMediaLink[] = [],
         private readonly onRefreshSource?: MediaSourceAction,
-        private readonly onChangeSource?: MediaSourceAction
+        private readonly onChangeSource?: MediaSourceAction,
+        ratingScale: RatingScale = 5
     ) {
         super(app);
         this.item = item;
         this.onSave = onSave;
         this.onDelete = onDelete;
         this.onRefreshCommunityRating = onRefreshCommunityRating;
+        this.ratingScale = ratingScale;
 
         this.title = item.displayName;
         this.poster = item.imageUrl;
@@ -723,21 +727,39 @@ export class ReadingEditModal extends Modal {
         const stars = this.qs<HTMLElement>(root, '[data-role="stars"]');
         if (!stars) return;
         stars.empty();
-        for (let rawValue = 1; rawValue <= 5; rawValue++) {
-            const value = rawValue as Exclude<UserRating, null>;
-            const button = stars.createEl('button', {
-                cls: 'lorebase-editmode-star',
-                text: String.fromCharCode(9733),
-                attr: { type: 'button', 'data-rating': String(value), 'aria-label': `${t('editRating')} ${value}` },
+        if (this.ratingScale === 10) {
+            const select = stars.createEl('select', {
+                cls: 'lorebase-editmode-input lorebase-editmode-rating-select',
+                attr: { 'aria-label': t('editRating') },
             });
-            button.dataset.rating = String(value);
-            button.addEventListener('click', () => {
-                this.selectedRating = this.selectedRating === value ? null : value;
+            select.createEl('option', { text: '-', value: '0' });
+            for (let i = 1; i <= 10; i++) {
+                select.createEl('option', { text: String(i), value: String(i) });
+            }
+            select.value = String(this.selectedRating ?? 0);
+            select.addEventListener('change', () => {
+                this.selectedRating = clampRating(Number(select.value), this.ratingScale);
                 this.updateRatingUI(root);
             });
+        } else {
+            for (let rawValue = 1; rawValue <= 5; rawValue++) {
+                const value = rawValue as Exclude<UserRating, null>;
+                const button = stars.createEl('button', {
+                    cls: 'lorebase-editmode-star',
+                    text: String.fromCharCode(9733),
+                    attr: { type: 'button', 'data-rating': String(value), 'aria-label': `${t('editRating')} ${value}` },
+                });
+                button.dataset.rating = String(value);
+                button.addEventListener('click', () => {
+                    this.selectedRating = this.selectedRating === value ? null : value;
+                    this.updateRatingUI(root);
+                });
+            }
         }
         this.qs<HTMLButtonElement>(root, '[data-action="clear-rating"]')?.addEventListener('click', () => {
             this.selectedRating = null;
+            const select = this.qs<HTMLSelectElement>(root, '.lorebase-editmode-rating-select');
+            if (select) select.value = '0';
             this.updateRatingUI(root);
         });
         this.updateRatingUI(root);
@@ -817,10 +839,9 @@ export class ReadingEditModal extends Modal {
             const value = Number(btn.dataset.rating ?? '0');
             btn.toggleClass('is-active', this.selectedRating !== null && value <= this.selectedRating);
         });
-        const numeric = this.selectedRating ?? 0;
-        this.setText(root, '[data-role="rating-value"]', `${numeric.toFixed(1)} / 5.0`);
+        this.setText(root, '[data-role="rating-value"]', ratingReadout(this.selectedRating, this.ratingScale));
         const line = this.qs<HTMLElement>(root, '[data-role="rating-line"]');
-        if (line) line.style.width = `${Math.round((numeric / 5) * 100)}%`;
+        if (line) line.style.width = `${ratingFillPct(this.selectedRating, this.ratingScale)}%`;
     }
 
     private updateDates(root: HTMLElement): void {

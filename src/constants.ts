@@ -401,6 +401,7 @@ function createDefaultBadges(): LorebaseSettings['badges'] {
 /** Default plugin settings */
 export const DEFAULT_SETTINGS: LorebaseSettings = {
     language: 'en',
+    ratingScale: 5,
     settingsLayoutMode: 'tabs',
     accentColor: '#e4a47e',
     showAddModeChoice: true,

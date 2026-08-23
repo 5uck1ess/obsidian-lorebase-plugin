@@ -22,7 +22,7 @@ export function parseUserRating(value: unknown): UserRating {
     const parsed = parseNumber(value);
     if (parsed === null) return null;
     const rating = Math.trunc(parsed);
-    return rating >= 1 && rating <= 5 ? rating as UserRating : null;
+    return rating >= 1 && rating <= 10 ? rating as UserRating : null;
 }
 
 export function parseRelatedMedia(raw: unknown): RelatedMediaLink[] {

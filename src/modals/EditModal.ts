@@ -4,7 +4,8 @@
  */
 
 import { App, Menu, Modal, Notice, TFile, setIcon } from 'obsidian';
-import { GameDlc, GameItem, GameStatus, RelatedMediaLink, TagPreset, UserRating } from '../types';
+import { GameDlc, GameItem, GameStatus, RatingScale, RelatedMediaLink, TagPreset, UserRating } from '../types';
+import { clampRating, ratingFillPct, ratingReadout } from '../services/ratingScale';
 import { DEFAULT_COVER, DEFAULT_GAME_TAG_PRESETS, STATUS_CONFIG } from '../constants';
 import { i18n, t } from '../localization';
 import { GenreEditModal } from './GenreEditModal';
@@ -30,6 +31,7 @@ export class EditModal extends Modal {
     private onRefreshDlc?: GameDlcRefresh;
     private seriesOptions: string[];
     private tagPresets: TagPreset[];
+    private ratingScale: RatingScale;
 
     private selectedRating: UserRating;
     private selectedStatus: GameStatus;
@@ -86,7 +88,8 @@ export class EditModal extends Modal {
         relatedCandidates: RelatedMediaLink[] = [],
         incomingRelated: RelatedMediaLink[] = [],
         private readonly onRefreshSource?: MediaSourceAction,
-        private readonly onChangeSource?: MediaSourceAction
+        private readonly onChangeSource?: MediaSourceAction,
+        ratingScale: RatingScale = 5
     ) {
         super(app);
         this.game = game;
@@ -96,6 +99,7 @@ export class EditModal extends Modal {
         this.tagPresets = tagPresets;
         this.onRefreshCommunityRating = onRefreshCommunityRating;
         this.onRefreshDlc = onRefreshDlc;
+        this.ratingScale = ratingScale;
 
         this.selectedRating = game.userRating;
         this.selectedStatus = game.status;
@@ -608,22 +612,41 @@ export class EditModal extends Modal {
     private bindRating(root: HTMLElement): void {
         const stars = this.qs<HTMLElement>(root, '[data-role="stars"]');
         if (stars) {
-            for (let i = 1; i <= 5; i++) {
-                const btn = stars.createEl('button', {
-                    cls: 'lorebase-editmode-star',
-                    attr: { type: 'button', 'aria-label': `${t('editRating')} ${i}` }
+            stars.empty();
+            if (this.ratingScale === 10) {
+                const select = stars.createEl('select', {
+                    cls: 'lorebase-editmode-input lorebase-editmode-rating-select',
+                    attr: { 'aria-label': t('editRating') },
                 });
-                btn.textContent = String.fromCharCode(9733);
-                btn.dataset.rating = String(i);
-                btn.addEventListener('click', () => {
-                    this.selectedRating = i as UserRating;
+                select.createEl('option', { text: '-', value: '0' });
+                for (let i = 1; i <= 10; i++) {
+                    select.createEl('option', { text: String(i), value: String(i) });
+                }
+                select.value = String(this.selectedRating ?? 0);
+                select.addEventListener('change', () => {
+                    this.selectedRating = clampRating(Number(select.value), this.ratingScale);
                     this.updateRatingUI(root);
                 });
+            } else {
+                for (let i = 1; i <= 5; i++) {
+                    const btn = stars.createEl('button', {
+                        cls: 'lorebase-editmode-star',
+                        attr: { type: 'button', 'aria-label': `${t('editRating')} ${i}` }
+                    });
+                    btn.textContent = String.fromCharCode(9733);
+                    btn.dataset.rating = String(i);
+                    btn.addEventListener('click', () => {
+                        this.selectedRating = i as UserRating;
+                        this.updateRatingUI(root);
+                    });
+                }
             }
         }
 
         this.qs<HTMLButtonElement>(root, '[data-action="clear-rating"]')?.addEventListener('click', () => {
             this.selectedRating = null;
+            const select = this.qs<HTMLSelectElement>(root, '.lorebase-editmode-rating-select');
+            if (select) select.value = '0';
             this.updateRatingUI(root);
         });
 
@@ -1372,10 +1395,8 @@ export class EditModal extends Modal {
         const ratingValue = this.qs<HTMLElement>(root, '[data-role="rating-value"]');
         const ratingLine = this.qs<HTMLElement>(root, '[data-role="rating-line"]');
 
-        const numeric = this.selectedRating ?? 0;
-        const pct = Math.round((numeric / 5) * 100);
-        if (ratingValue) ratingValue.textContent = `${numeric.toFixed(1)} / 5.0`;
-        if (ratingLine) ratingLine.style.width = `${pct}%`;
+        if (ratingValue) ratingValue.textContent = ratingReadout(this.selectedRating, this.ratingScale);
+        if (ratingLine) ratingLine.style.width = `${ratingFillPct(this.selectedRating, this.ratingScale)}%`;
     }
 
     private updateCharCount(root: HTMLElement): void {

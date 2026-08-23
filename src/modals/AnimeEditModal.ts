@@ -4,7 +4,8 @@
  */
 
 import { App, Menu, Modal, setIcon, TFile } from 'obsidian';
-import { AnimeFormat, AnimeItem, AnimePart, AnimeStatus, RelatedMediaLink, UserRating } from '../types';
+import { AnimeFormat, AnimeItem, AnimePart, AnimeStatus, RatingScale, RelatedMediaLink, UserRating } from '../types';
+import { clampRating, ratingFillPct, ratingReadout } from '../services/ratingScale';
 import { DEFAULT_COVER, STATUS_CONFIG } from '../constants';
 import { i18n, t } from '../localization';
 import { createLorebaseDropdown, LorebaseDropdownHandle } from '../components/LorebaseDropdown';
@@ -31,6 +32,7 @@ export class AnimeEditModal extends Modal {
     private onDelete?: () => void;
     private onRefreshParts?: () => Promise<AnimePartsRefreshResult | boolean | void>;
     private onRefreshCommunityRating?: CommunityRatingRefresh;
+    private ratingScale: RatingScale;
 
     private selectedRating: UserRating;
     private selectedStatus: AnimeStatus;
@@ -84,7 +86,8 @@ export class AnimeEditModal extends Modal {
         onRefreshCommunityRating?: CommunityRatingRefresh,
         relatedCandidates: RelatedCandidate[] = [],
         private readonly onRefreshSource?: MediaSourceAction,
-        private readonly onChangeSource?: MediaSourceAction
+        private readonly onChangeSource?: MediaSourceAction,
+        ratingScale: RatingScale = 5
     ) {
         super(app);
         this.anime = anime;
@@ -92,6 +95,7 @@ export class AnimeEditModal extends Modal {
         this.onDelete = onDelete;
         this.onRefreshParts = onRefreshParts;
         this.onRefreshCommunityRating = onRefreshCommunityRating;
+        this.ratingScale = ratingScale;
 
         this.selectedRating = anime.userRating;
         this.selectedStatus = anime.status;
@@ -482,8 +486,14 @@ export class AnimeEditModal extends Modal {
                 this.updateRatingUI(root);
             });
         });
+        const select = this.qs<HTMLSelectElement>(root, '.lorebase-editmode-rating-select');
+        select?.addEventListener('change', () => {
+            this.selectedRating = clampRating(Number(select.value), this.ratingScale);
+            this.updateRatingUI(root);
+        });
         this.qs<HTMLButtonElement>(root, '[data-action="clear-rating"]')?.addEventListener('click', () => {
             this.selectedRating = null;
+            if (select) select.value = '0';
             this.updateRatingUI(root);
         });
     }
@@ -811,6 +821,18 @@ export class AnimeEditModal extends Modal {
         const stars = this.qs<HTMLElement>(root, '[data-role="stars"]');
         if (!stars) return;
         stars.empty();
+        if (this.ratingScale === 10) {
+            const select = stars.createEl('select', {
+                cls: 'lorebase-editmode-input lorebase-editmode-rating-select',
+                attr: { 'aria-label': t('editRating') },
+            });
+            select.createEl('option', { text: '-', value: '0' });
+            for (let i = 1; i <= 10; i++) {
+                select.createEl('option', { text: String(i), value: String(i) });
+            }
+            select.value = String(this.selectedRating ?? 0);
+            return;
+        }
         for (let i = 1; i <= 5; i++) {
             const button = stars.createEl('button', {
                 cls: 'lorebase-editmode-star',
@@ -1061,10 +1083,9 @@ export class AnimeEditModal extends Modal {
             const value = Number(btn.dataset.rating ?? '0');
             btn.toggleClass('is-active', this.selectedRating !== null && value <= this.selectedRating);
         });
-        const numeric = this.selectedRating ?? 0;
-        this.setText(root, '[data-role="rating-value"]', `${numeric.toFixed(1)} / 5.0`);
+        this.setText(root, '[data-role="rating-value"]', ratingReadout(this.selectedRating, this.ratingScale));
         const line = this.qs<HTMLElement>(root, '[data-role="rating-line"]');
-        if (line) line.style.width = `${Math.round((numeric / 5) * 100)}%`;
+        if (line) line.style.width = `${ratingFillPct(this.selectedRating, this.ratingScale)}%`;
     }
 
     private updateProgressSummary(root: HTMLElement): void {

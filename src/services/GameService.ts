@@ -247,7 +247,7 @@ export class GameService {
     private parseUserRating(value: unknown): GameDlc['userRating'] {
         if (value === null || value === undefined || value === '') return null;
         const parsed = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
-        return Number.isFinite(parsed) && parsed >= 1 && parsed <= 5
+        return Number.isFinite(parsed) && parsed >= 1 && parsed <= 10
             ? parsed as GameDlc['userRating']
             : null;
     }
@@ -428,13 +428,13 @@ export class GameService {
             }
 
             // Parse rating safely
-            let userRating = null;
+            let userRating: GameItem['userRating'] = null;
             if (metadata.userRating !== undefined && metadata.userRating !== null) {
                 const rating = typeof metadata.userRating === 'string'
                     ? parseInt(metadata.userRating, 10)
                     : Number(metadata.userRating);
-                if (!isNaN(rating) && rating >= 1 && rating <= 5) {
-                    userRating = rating as 1 | 2 | 3 | 4 | 5;
+                if (!isNaN(rating) && rating >= 1 && rating <= 10) {
+                    userRating = rating as GameItem['userRating'];
                 }
             }
 
@@ -591,7 +591,7 @@ export class GameService {
             if (game.userRating) {
                 stats.withRating++;
                 ratingSum += game.userRating;
-                stats.ratingDistribution[game.userRating]++;
+                stats.ratingDistribution[game.userRating] = (stats.ratingDistribution[game.userRating] || 0) + 1;
             }
 
             if (game.gameSeries && game.gameSeries !== t('noSeries')) {

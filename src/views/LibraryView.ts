@@ -9,6 +9,7 @@ import { GameService } from '../services/GameService';
 import { AnimeService } from '../services/AnimeService';
 import { VideoService } from '../services/VideoService';
 import { ReadingService } from '../services/ReadingService';
+import { ratingBadgeText } from '../services/ratingScale';
 import { MetadataService } from '../services/MetadataService';
 import { Toolbar, ToolbarCallbacks } from '../components/Toolbar';
 import { GameCard } from '../components/GameCard';
@@ -1380,6 +1381,7 @@ export class LibraryView extends ItemView {
     private showContextMenu(game: MediaItem, x: number, y: number): void {
         showMediaContextMenu(game, x, y, {
             isDestroyed: () => this.isDestroyed,
+            ratingScale: this.plugin.settings.ratingScale,
             getStatusOptions: () => this.getStatusOptions(),
             onApplyFiltersAndSort: () => this.applyFiltersAndSort({ scrollMode: 'preserve' }),
             onItemMutated: (item, changedFields) => this.handleContextItemMutation(item, changedFields),
@@ -1532,13 +1534,11 @@ export class LibraryView extends ItemView {
         const group = this.getOrCreateBadgeGroup(imageEl, badgeProfile.rating.position);
         const ratingBadge = group.createDiv({ cls: 'lorebase-card-rating' });
 
-        if (badgeProfile.rating.mode === 'emoji') {
+        const emoji = RATING_EMOJI[item.userRating];
+        if (badgeProfile.rating.mode === 'emoji' && emoji) {
             ratingBadge.addClass('is-emoji');
-            ratingBadge.textContent = RATING_EMOJI[item.userRating] ?? '';
-            return;
         }
-
-        ratingBadge.textContent = `★${item.userRating}`;
+        ratingBadge.textContent = ratingBadgeText(item.userRating, badgeProfile.rating.mode, emoji);
     }
 
     private updateFavoriteBadge(

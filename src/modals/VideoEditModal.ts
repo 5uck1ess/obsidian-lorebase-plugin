@@ -1,7 +1,8 @@
 import { App, Menu, Modal, setIcon, TFile } from 'obsidian';
 import { DEFAULT_COVER, STATUS_CONFIG } from '../constants';
 import { i18n, t } from '../localization';
-import { MovieItem, RelatedMediaLink, SeriesItem, UserRating, VideoPart, VideoStatus } from '../types';
+import { MovieItem, RatingScale, RelatedMediaLink, SeriesItem, UserRating, VideoPart, VideoStatus } from '../types';
+import { clampRating, ratingFillPct, ratingReadout } from '../services/ratingScale';
 import { GenreEditModal } from './GenreEditModal';
 import { CommunityRatingRefresh, renderCommunityRatingPanel } from './CommunityRatingPanel';
 import { MediaSourceAction, renderMediaSourcePanel } from './MediaSourcePanel';
@@ -21,6 +22,7 @@ export class VideoEditModal extends Modal {
     private onSave: (updates: VideoUpdates) => Promise<void>;
     private onDelete: () => void;
     private onRefreshCommunityRating?: CommunityRatingRefresh;
+    private ratingScale: RatingScale;
 
     private title: string;
     private poster: string;
@@ -77,13 +79,15 @@ export class VideoEditModal extends Modal {
         incomingRelated: RelatedMediaLink[] = [],
         relatedCandidates: RelatedCandidate[] = [],
         private readonly onRefreshSource?: MediaSourceAction,
-        private readonly onChangeSource?: MediaSourceAction
+        private readonly onChangeSource?: MediaSourceAction,
+        ratingScale: RatingScale = 5
     ) {
         super(app);
         this.item = item;
         this.onSave = onSave;
         this.onDelete = onDelete;
         this.onRefreshCommunityRating = onRefreshCommunityRating;
+        this.ratingScale = ratingScale;
 
         this.title = item.displayName;
         this.poster = item.imageUrl;
@@ -512,8 +516,14 @@ export class VideoEditModal extends Modal {
                 this.updateRatingUI(root);
             });
         });
+        const select = this.qs<HTMLSelectElement>(root, '.lorebase-editmode-rating-select');
+        select?.addEventListener('change', () => {
+            this.selectedRating = clampRating(Number(select.value), this.ratingScale);
+            this.updateRatingUI(root);
+        });
         this.qs<HTMLButtonElement>(root, '[data-action="clear-rating"]')?.addEventListener('click', () => {
             this.selectedRating = null;
+            if (select) select.value = '0';
             this.updateRatingUI(root);
         });
     }
@@ -742,6 +752,18 @@ export class VideoEditModal extends Modal {
         const stars = this.qs<HTMLElement>(root, '[data-role="stars"]');
         if (!stars) return;
         stars.empty();
+        if (this.ratingScale === 10) {
+            const select = stars.createEl('select', {
+                cls: 'lorebase-editmode-input lorebase-editmode-rating-select',
+                attr: { 'aria-label': t('editRating') },
+            });
+            select.createEl('option', { text: '-', value: '0' });
+            for (let i = 1; i <= 10; i++) {
+                select.createEl('option', { text: String(i), value: String(i) });
+            }
+            select.value = String(this.selectedRating ?? 0);
+            return;
+        }
         for (let i = 1; i <= 5; i++) {
             stars.createEl('button', {
                 cls: 'lorebase-editmode-star',
@@ -1040,10 +1062,9 @@ export class VideoEditModal extends Modal {
             const value = Number(btn.dataset.rating ?? '0');
             btn.toggleClass('is-active', this.selectedRating !== null && value <= this.selectedRating);
         });
-        const numeric = this.selectedRating ?? 0;
-        this.setText(root, '[data-role="rating-value"]', `${numeric.toFixed(1)} / 5.0`);
+        this.setText(root, '[data-role="rating-value"]', ratingReadout(this.selectedRating, this.ratingScale));
         const line = this.qs<HTMLElement>(root, '[data-role="rating-line"]');
-        if (line) line.style.width = `${Math.round((numeric / 5) * 100)}%`;
+        if (line) line.style.width = `${ratingFillPct(this.selectedRating, this.ratingScale)}%`;
     }
 
     private updateProgressSummary(root: HTMLElement): void {
